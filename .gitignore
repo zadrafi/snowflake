@@ -1,0 +1,37 @@
+# Generated PDFs
+data/invoices/
+data/demo_invoices/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+credentials.json
+service_account*.json
+secrets.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+.aws/
+.gcp/
+.streamlit/secrets.toml
+streamlit/.streamlit/secrets.toml
