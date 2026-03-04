@@ -73,7 +73,7 @@ def test_extract_lab_switch_to_line_items_template(app_url, page):
             has_text="Line Items Table")
         if option.count() > 0:
             option.first.click()
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(800)
             wait_for_streamlit(page, selectors="textarea")
             textarea = page.locator("textarea").first
             if textarea.count() > 0:
@@ -85,7 +85,7 @@ def test_extract_lab_visual_builder_mode(app_url, page):
     vb = page.locator('[data-testid="stRadio"] label', has_text="Visual Builder")
     if vb.count() > 0:
         vb.first.click()
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(800)
         wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
         assert page.locator('[data-testid="stTextInput"]').count() >= 2
 
@@ -95,7 +95,7 @@ def test_extract_lab_visual_builder_table_schema_mode(app_url, page):
     vb = page.locator('[data-testid="stRadio"] label', has_text="Visual Builder")
     if vb.count() > 0:
         vb.first.click()
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(800)
         wait_for_streamlit(page, selectors='[data-testid="stRadio"]')
         radios = page.locator('[data-testid="stRadio"]')
         if radios.count() >= 2:
@@ -108,7 +108,7 @@ def test_extract_lab_raw_json_editor_mode(app_url, page):
     raw = page.locator('[data-testid="stRadio"] label', has_text="Raw JSON Editor")
     if raw.count() > 0:
         raw.first.click()
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(800)
         wait_for_streamlit(page, selectors="textarea")
         assert page.locator("textarea").count() >= 1
 
@@ -159,7 +159,7 @@ def test_extract_lab_general_document_template(app_url, page):
             has_text="General Document")
         if option.count() > 0:
             option.first.click()
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(800)
             wait_for_streamlit(page, selectors="textarea")
             textarea = page.locator("textarea").first
             if textarea.count() > 0:
@@ -171,7 +171,7 @@ def test_extract_lab_raw_json_invalid_shows_no_crash(app_url, page):
     raw = page.locator('[data-testid="stRadio"] label', has_text="Raw JSON Editor")
     if raw.count() > 0:
         raw.first.click()
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(800)
         wait_for_streamlit(page, selectors="textarea")
         textarea = page.locator("textarea").first
         if textarea.count() > 0:
@@ -185,7 +185,7 @@ def test_extract_lab_preview_response_format_expander(app_url, page):
     vb = page.locator('[data-testid="stRadio"] label', has_text="Visual Builder")
     if vb.count() > 0:
         vb.first.click()
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(800)
         wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
         preview = page.locator("text=Preview")
         code_block = page.locator('[data-testid="stCode"]')
@@ -197,7 +197,7 @@ def test_extract_lab_visual_builder_add_field_button(app_url, page):
     vb = page.locator('[data-testid="stRadio"] label', has_text="Visual Builder")
     if vb.count() > 0:
         vb.first.click()
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(800)
         wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
         assert page.locator('button:has-text("Add field")').count() > 0
 
@@ -207,12 +207,12 @@ def test_extract_lab_visual_builder_table_mode_inputs(app_url, page):
     vb = page.locator('[data-testid="stRadio"] label', has_text="Visual Builder")
     if vb.count() > 0:
         vb.first.click()
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(800)
         wait_for_streamlit(page, selectors='[data-testid="stRadio"]')
         table_label = page.locator('[data-testid="stRadio"] label', has_text="Table")
         if table_label.count() > 0:
             table_label.first.click()
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(800)
             wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
             body_text = page.inner_text("body")
             assert "Table description" in body_text
@@ -224,12 +224,12 @@ def test_extract_lab_visual_builder_add_column_button(app_url, page):
     vb = page.locator('[data-testid="stRadio"] label', has_text="Visual Builder")
     if vb.count() > 0:
         vb.first.click()
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(800)
         wait_for_streamlit(page, selectors='[data-testid="stRadio"]')
         table_label = page.locator('[data-testid="stRadio"] label', has_text="Table")
         if table_label.count() > 0:
             table_label.first.click()
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(800)
             wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
             assert page.locator('button:has-text("Add column")').count() > 0
 
@@ -239,13 +239,13 @@ def test_extract_lab_invalid_json_error_message(app_url, page):
     raw = page.locator('[data-testid="stRadio"] label', has_text="Raw JSON Editor")
     if raw.count() > 0:
         raw.first.click()
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(800)
         wait_for_streamlit(page, selectors="textarea")
         textarea = page.locator("textarea").first
         if textarea.count() > 0:
             textarea.fill("{not valid json!!!")
             textarea.press("Tab")
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(800)
             wait_for_streamlit(page, selectors='[data-testid="stAlert"]')
             assert page.locator("text=Invalid JSON").count() > 0
 
@@ -264,13 +264,13 @@ def test_extract_lab_add_field_click_adds_row(app_url, page):
     if vb.count() == 0:
         pytest.skip("Visual Builder radio not found")
     vb.first.click()
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
     inputs_before = page.locator('[data-testid="stTextInput"]').count()
     add_btn = page.locator('button:has-text("Add field")')
     assert add_btn.count() > 0
     add_btn.first.click()
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
     assert page.locator('[data-testid="stTextInput"]').count() > inputs_before
     assert_no_exceptions(page)
@@ -282,7 +282,7 @@ def test_extract_lab_delete_field_click(app_url, page):
     if vb.count() == 0:
         pytest.skip("Visual Builder radio not found")
     vb.first.click()
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
     inputs_before = page.locator('[data-testid="stTextInput"]').count()
     if inputs_before < 4:
@@ -291,7 +291,7 @@ def test_extract_lab_delete_field_click(app_url, page):
     if delete_btn.count() == 0:
         pytest.skip("No delete buttons found")
     delete_btn.first.click()
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
     assert page.locator('[data-testid="stTextInput"]').count() < inputs_before
     assert_no_exceptions(page)
@@ -303,19 +303,19 @@ def test_extract_lab_add_column_click_adds_row(app_url, page):
     if vb.count() == 0:
         pytest.skip("Visual Builder radio not found")
     vb.first.click()
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page, selectors='[data-testid="stRadio"]')
     table_label = page.locator('[data-testid="stRadio"] label', has_text="Table")
     if table_label.count() == 0:
         pytest.skip("Table sub-mode not found")
     table_label.first.click()
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
     inputs_before = page.locator('[data-testid="stTextInput"]').count()
     add_col_btn = page.locator('button:has-text("Add column")')
     assert add_col_btn.count() > 0
     add_col_btn.first.click()
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
     assert page.locator('[data-testid="stTextInput"]').count() > inputs_before
     assert_no_exceptions(page)
@@ -327,7 +327,7 @@ def test_extract_lab_edit_entity_field_updates_preview(app_url, page):
     if vb.count() == 0:
         pytest.skip("Visual Builder radio not found")
     vb.first.click()
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page, selectors='[data-testid="stTextInput"]')
     text_inputs = page.locator('[data-testid="stTextInput"] input')
     if text_inputs.count() == 0:
@@ -335,7 +335,7 @@ def test_extract_lab_edit_entity_field_updates_preview(app_url, page):
     text_inputs.first.click()
     text_inputs.first.fill("custom_test_field")
     text_inputs.first.press("Tab")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page, selectors='[data-testid="stCode"]')
     code_blocks = page.locator('[data-testid="stCode"]')
     if code_blocks.count() > 0:
@@ -391,7 +391,7 @@ def test_extract_lab_template_textarea_edit_validates(app_url, page):
     textarea.click()
     textarea.fill('{"my_field": "What is the custom value?"}')
     textarea.press("Tab")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page)
     assert page.locator("text=Invalid JSON").count() == 0
     assert_no_exceptions(page)

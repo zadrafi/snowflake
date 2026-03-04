@@ -159,7 +159,7 @@ def test_process_new_reset_expander_has_button(app_url, page):
 def test_process_new_step4_invoice_detail_selectbox(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     df = page.locator('[data-testid="stDataFrame"]')
     if df.count() > 0:
         assert page.locator('[data-testid="stSelectbox"]').count() >= 2
@@ -168,7 +168,7 @@ def test_process_new_step4_invoice_detail_selectbox(app_url, page):
 def test_process_new_step4_extracted_fields(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     body_text = page.inner_text("body")
     if "Recently Extracted Invoices" in body_text:
         df = page.locator('[data-testid="stDataFrame"]')
@@ -242,7 +242,7 @@ def test_process_new_refresh_button_click(app_url, page):
     if refresh_btn.count() == 0:
         pytest.skip("Refresh button not rendered")
     refresh_btn.first.click()
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     wait_for_streamlit(page)
     assert page.locator("text=Process New Invoices").count() > 0
     assert_no_exceptions(page)

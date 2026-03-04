@@ -65,8 +65,8 @@ def wait_for_streamlit(page, selectors=None, timeout=90_000):
         page.wait_for_selector(selectors, timeout=timeout)
     except Exception:
         pass
-    # Brief buffer for Streamlit re-renders (reduced from 5000ms)
-    page.wait_for_timeout(1000)
+    # Brief buffer for Streamlit re-renders (reduced from 5000ms → 1000ms → 500ms)
+    page.wait_for_timeout(500)
 
 
 def get_metric_value(page, label_text):

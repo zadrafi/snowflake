@@ -70,14 +70,14 @@ def test_sidebar_click_navigates_to_page(app_url, page):
     dash_link = sidebar.locator("a", has_text="Dashboard")
     if dash_link.count() > 0:
         dash_link.first.click()
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(1000)
         wait_for_streamlit(page)
         assert page.locator("text=Accounts Payable").count() > 0
     else:
         nav_link = sidebar.locator("text=Dashboard")
         if nav_link.count() > 0:
             nav_link.first.click()
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(1000)
             wait_for_streamlit(page)
         assert_no_exceptions(page)
 
@@ -107,7 +107,7 @@ def _click_sidebar_link(page, app_url, link_text, expected_title):
     if link.count() == 0:
         pytest.skip(f"Sidebar link '{link_text}' not found")
     link.first.click()
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(1000)
     wait_for_streamlit(page)
     assert page.locator(f"text={expected_title}").count() > 0
     assert_no_exceptions(page)

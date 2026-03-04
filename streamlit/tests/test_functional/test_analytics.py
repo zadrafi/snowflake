@@ -27,14 +27,14 @@ def test_analytics_monthly_spend_trend(app_url, page):
 def test_analytics_spend_by_category(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     assert page.locator("text=Spend by Category").count() > 0
 
 
 def test_analytics_aging_and_top_products(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     assert page.locator("text=Aging Distribution").count() > 0
     assert page.locator("text=Top 20 Products by Spend").count() > 0
 
@@ -47,14 +47,14 @@ def test_analytics_plotly_charts_render(app_url, page):
 def test_analytics_four_plotly_charts(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     assert page.locator('[data-testid="stPlotlyChart"]').count() >= 4
 
 
 def test_analytics_vendor_payment_terms(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     assert page.locator("text=Vendor Payment Terms Summary").count() > 0
     assert page.locator('[data-testid="stDataFrame"]').count() >= 1
 
@@ -62,7 +62,7 @@ def test_analytics_vendor_payment_terms(app_url, page):
 def test_analytics_top_products_dataframe_has_rows(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(1000)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     page.wait_for_timeout(1000)
     assert page.locator("text=Top 20 Products by Spend").count() > 0
@@ -87,7 +87,7 @@ def test_analytics_caption_text(app_url, page):
 def test_analytics_monthly_summary_caption(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     caption = page.locator("text=/Total:.*Monthly Avg:/")
     if caption.count() == 0:
         total_el = page.locator("text=Total: $")
@@ -98,7 +98,7 @@ def test_analytics_monthly_summary_caption(app_url, page):
 def test_analytics_two_dataframes_with_data(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     dataframes = page.locator('[data-testid="stDataFrame"]')
     assert dataframes.count() >= 2
     for i in range(min(2, dataframes.count())):
@@ -109,7 +109,7 @@ def test_analytics_two_dataframes_with_data(app_url, page):
 def test_analytics_all_six_section_headers(app_url, page):
     _navigate(page, app_url)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(800)
     for header in ["Spend by Vendor", "Monthly Spend Trend", "Spend by Category",
                    "Aging Distribution", "Top 20 Products by Spend",
                    "Vendor Payment Terms Summary"]:
