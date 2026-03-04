@@ -602,9 +602,11 @@ export POC_CONNECTION=my_account
 
 # Option B: pass to deploy script directly
 ./poc/deploy_poc.sh --connection my_account
+# or shorthand:
+./poc/deploy_poc.sh -c my_account
 ```
 
-The default connection name is `aws_spcs`. Override it with the `POC_CONNECTION` environment variable.
+The default connection name is `aws_spcs`. Override it with `POC_CONNECTION` env var or the `--connection` / `-c` flag.
 
 ### Install Test Dependencies
 
@@ -649,8 +651,17 @@ uv run pytest tests/test_sql_integration.py tests/test_data_validation.py tests/
 **Tier 2 — Full suite including E2E browser tests** (~3 minutes):
 
 ```bash
-uv run pytest tests/ -v
+# Start the local Streamlit server first (in a separate terminal):
+cd poc && uv run streamlit run streamlit/streamlit_app.py --server.port 8504 --server.headless true
+
+# Then run all tests (in another terminal):
+cd poc && uv run pytest tests/ -v
 ```
+
+> **Why a local server?** The E2E tests use Playwright to drive a real browser against the
+> Streamlit app. The SPCS-hosted dashboard sits behind Snowflake authentication, which
+> Playwright cannot negotiate. The local server connects to Snowflake via your
+> `secrets.toml` credentials and serves the same pages on `localhost:8504`.
 
 **Tier 3 — Clean-room: teardown, redeploy, test** (proves scripts work from scratch):
 
@@ -661,7 +672,10 @@ snow sql -c my_account -f poc/teardown_poc.sql
 # 2. Redeploy from scratch
 ./poc/deploy_poc.sh --connection my_account
 
-# 3. Run all tests
+# 3. Start local Streamlit server (separate terminal, for E2E tests)
+cd poc && uv run streamlit run streamlit/streamlit_app.py --server.port 8504 --server.headless true
+
+# 4. Run all tests
 cd poc && uv run pytest tests/ -v
 ```
 
@@ -839,7 +853,7 @@ Once single-file results look good, open **`sql/04_batch_extract.sql`**.
 
 > **Copy your tuned prompts** from Phase 3 into this script. The prompts in `04_batch_extract.sql` must match exactly what you validated on a single file.
 
-Run the script. It processes all files in `RAW_DOCUMENTS` where `is_extracted = FALSE`.
+Run the script. It processes all files in `RAW_DOCUMENTS` where `extracted = FALSE`.
 
 **Monitor progress:**
 
@@ -847,8 +861,8 @@ Run the script. It processes all files in `RAW_DOCUMENTS` where `is_extracted = 
 -- Check extraction status
 SELECT
     COUNT(*) AS total,
-    COUNT_IF(is_extracted) AS extracted,
-    COUNT_IF(NOT is_extracted) AS pending
+    COUNT_IF(extracted) AS extracted,
+    COUNT_IF(NOT extracted) AS pending
 FROM RAW_DOCUMENTS;
 
 -- Preview extracted data

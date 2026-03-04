@@ -1,7 +1,33 @@
 #!/usr/bin/env bash
 # deploy_poc.sh — Deploy the AI_EXTRACT POC kit to a Snowflake account
 # Usage: ./poc/deploy_poc.sh [--connection <name>]
+#        ./poc/deploy_poc.sh [<connection_name>]
+#        POC_CONNECTION=<name> ./poc/deploy_poc.sh
 set -euo pipefail
+
+# ---------- Parse arguments ----------
+_POSITIONAL_CONNECTION=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --connection|-c)
+            _POSITIONAL_CONNECTION="$2"
+            shift 2
+            ;;
+        --connection=*)
+            _POSITIONAL_CONNECTION="${1#*=}"
+            shift
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            echo "Usage: ./poc/deploy_poc.sh [--connection <name>]" >&2
+            exit 1
+            ;;
+        *)
+            _POSITIONAL_CONNECTION="$1"
+            shift
+            ;;
+    esac
+done
 
 # ---------- Config (override via environment variables) ----------
 POC_DB="${POC_DB:-AI_EXTRACT_POC}"
@@ -9,7 +35,7 @@ POC_SCHEMA="${POC_SCHEMA:-DOCUMENTS}"
 POC_WH="${POC_WH:-AI_EXTRACT_WH}"
 POC_STAGE="${POC_STAGE:-DOCUMENT_STAGE}"
 POC_POOL="${POC_POOL:-AI_EXTRACT_POC_POOL}"
-CONNECTION="${POC_CONNECTION:-${1:-aws_spcs}}"
+CONNECTION="${POC_CONNECTION:-${_POSITIONAL_CONNECTION:-aws_spcs}}"
 CONNECTION_FLAG="-c $CONNECTION"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
