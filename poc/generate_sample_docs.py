@@ -260,8 +260,9 @@ def main():
     # Fixed seed for reproducible output
     random.seed(2025)
 
-    # Date range: recent dates so aging buckets are meaningful
-    date_end = datetime(2025, 6, 15)
+    # Date range: spread across the last 90 days from today so aging buckets
+    # (Current, 1-30, 31-60, 61-90) are always populated with meaningful data.
+    date_end = datetime.now()
     date_start = date_end - timedelta(days=90)
 
     print("Generating 5 sample invoices...")
