@@ -17,6 +17,7 @@ This kit walks you through a complete proof-of-concept:
 
 - [Prerequisites](#prerequisites)
 - [What You Need Before Starting](#what-you-need-before-starting)
+- [Quick Start (Automated Deploy)](#quick-start-automated-deploy)
 - [Step-by-Step Guide](#step-by-step-guide)
 - [Customizing for Your Document Type](#customizing-for-your-document-type)
 - [Understanding the Extraction Output](#understanding-the-extraction-output)
@@ -83,6 +84,25 @@ PDF, PNG, JPEG/JPG, DOCX/DOC, PPTX/PPT, EML, HTML/HTM, TXT/TEXT, TIF/TIFF, BMP, 
    - Contracts: parties, effective date, expiration date, contract value, governing law
    - Receipts: store name, date, total, payment method, items purchased
 3. **Access to Snowsight** (the Snowflake web UI) — all SQL scripts are designed to be run there
+
+---
+
+## Quick Start (Automated Deploy)
+
+If you have the [Snowflake CLI](https://docs.snowflake.com/en/developer-guide/snowflake-cli/index) (`snow`) and [uv](https://docs.astral.sh/uv/) installed, the deploy script runs all 7 SQL steps automatically:
+
+```bash
+# Deploy the entire POC in one command
+./poc/deploy_poc.sh --connection my_account
+
+# Or use an environment variable
+export POC_CONNECTION=my_account
+./poc/deploy_poc.sh
+```
+
+The script creates the database, tables, stages sample documents, runs batch extraction, creates views, sets up automation, and deploys the Streamlit dashboard. See [File Structure](#file-structure) for what gets created.
+
+If you prefer to understand each step, follow the manual [Step-by-Step Guide](#step-by-step-guide) below.
 
 ---
 
@@ -461,9 +481,12 @@ ALTER TASK EXTRACT_NEW_DOCUMENTS_TASK SUSPEND;
 ```
 ai_extract_poc/
 ├── README.md                              # This guide
-├── deploy_poc.sh                          # Automated deploy script (optional)
-├── teardown_poc.sql                       # Drop all POC objects
-├── pyproject.toml                         # Python dependencies (tests + app)
+├── deploy_poc.sh                          # Automated deploy script (Quick Start)
+├── teardown_poc.sql                       # Drop all POC objects (DB, warehouse, compute pool)
+├── conftest.py                            # Root pytest config: Snowflake connection fixture,
+│                                          #   Streamlit server lifecycle, env var overrides
+├── pyproject.toml                         # Python dependencies (app + dev/test)
+├── uv.lock                                # Lockfile for reproducible builds (committed)
 ├── sql/
 │   ├── 01_setup.sql                       # Database, schema, warehouse, stage
 │   ├── 02_tables.sql                      # Document tracking + extraction tables
@@ -475,26 +498,30 @@ ai_extract_poc/
 ├── streamlit/
 │   ├── streamlit_app.py                   # Landing page + pipeline overview
 │   ├── config.py                          # Dynamic config (zero hardcoded values)
-│   ├── environment.yml                    # Container Runtime dependencies
+│   ├── environment.yml                    # Container Runtime dependencies (plotly, pypdfium2)
+│   ├── .streamlit/
+│   │   └── secrets.toml                   # Snowflake credentials (gitignored, create locally)
 │   └── pages/
 │       ├── 0_Dashboard.py                 # KPI cards + recent documents
 │       ├── 1_Document_Viewer.py           # Browse, filter, drill-down + PDF viewer
 │       └── 2_Analytics.py                 # Charts: by sender, monthly, aging, top items
 └── tests/
+    ├── __init__.py                        # Package marker
     ├── test_deployment_readiness.py       # Pre-flight checks (Cortex, encryption, EAI)
     ├── test_sql_integration.py            # All SQL objects exist with correct schema
     ├── test_extraction_pipeline.py        # Live AI_EXTRACT, stored proc, idempotency
     ├── test_data_validation.py            # Data quality, parse failures, edge cases
     └── test_e2e/
-        ├── helpers.py                     # Shared Playwright utilities
-        ├── conftest.py                    # E2E fixtures + screenshot-on-failure
+        ├── __init__.py                    # Package marker
+        ├── conftest.py                    # E2E fixtures + screenshot-on-failure (daemon thread)
+        ├── helpers.py                     # Shared Playwright utilities (wait_for_streamlit)
         ├── test_poc_landing.py            # Landing page tests
         ├── test_poc_dashboard.py          # Dashboard page tests
         ├── test_poc_document_viewer.py    # Document Viewer page tests
         └── test_poc_analytics.py          # Analytics page tests
 ```
 
-**Run scripts in order: 01 → 02 → (upload files) → 03 → 04 → 05 → (optionally 06, 07)**
+**Run scripts in order: 01 -> 02 -> (upload files) -> 03 -> 04 -> 05 -> (optionally 06, 07)**
 
 ---
 
@@ -608,7 +635,14 @@ export POC_CONNECTION=my_account
 ./poc/deploy_poc.sh -c my_account
 ```
 
-The default connection name is `aws_spcs`. Override it with `POC_CONNECTION` env var or the `--connection` / `-c` flag.
+The default connection name is `aws_spcs`. Override it with the `POC_CONNECTION` env var or the `--connection` / `-c` flag. You can also override the database, schema, and warehouse names:
+
+```bash
+export POC_CONNECTION=my_account   # Snowflake connection name from config.toml
+export POC_DB=AI_EXTRACT_POC       # Database name (default: AI_EXTRACT_POC)
+export POC_SCHEMA=DOCUMENTS        # Schema name (default: DOCUMENTS)
+export POC_WH=AI_EXTRACT_WH        # Warehouse name (default: AI_EXTRACT_WH)
+```
 
 ### Install Test Dependencies
 
@@ -622,12 +656,24 @@ uv sync --all-groups
 uv run playwright install chromium
 ```
 
+> **Note:** `uv.lock` is committed to the repo, so `uv sync` produces a deterministic install matching the exact versions used during development and testing.
+
+### Test Infrastructure (`conftest.py`)
+
+The root-level `conftest.py` provides shared test infrastructure:
+
+- **Snowflake connection fixture** (`sf_conn`, `sf_cursor`) — connects using the `POC_CONNECTION` env var (default `aws_spcs`) and sets the active database, schema, and warehouse
+- **Streamlit server lifecycle** — automatically starts a local Streamlit server on port 8504 when E2E tests are selected, kills stale port holders, and waits for the server to be ready
+- **Environment variable configuration** — all names (database, schema, warehouse, connection) are configurable via `POC_DB`, `POC_SCHEMA`, `POC_WH`, and `POC_CONNECTION` env vars
+
 ### Streamlit Secrets (E2E Tests Only)
 
 The E2E tests run a local Streamlit server that needs Snowflake credentials. Create `poc/streamlit/.streamlit/secrets.toml`:
 
 ```toml
 # poc/streamlit/.streamlit/secrets.toml
+
+# Option A: SSO / browser-based login
 [connections.snowflake]
 account = "YOUR_ORG-YOUR_ACCOUNT"
 user = "YOUR_USERNAME"
@@ -636,7 +682,20 @@ warehouse = "AI_EXTRACT_WH"
 database = "AI_EXTRACT_POC"
 schema = "DOCUMENTS"
 role = "ACCOUNTADMIN"
+
+# Option B: Programmatic Access Token (PAT) — headless, no browser popup
+# [connections.snowflake]
+# account = "YOUR_ORG-YOUR_ACCOUNT"
+# user = "YOUR_USERNAME"
+# authenticator = "programmatic_access_token"
+# token = "YOUR_PAT_TOKEN_HERE"
+# warehouse = "AI_EXTRACT_WH"
+# database = "AI_EXTRACT_POC"
+# schema = "DOCUMENTS"
+# role = "ACCOUNTADMIN"
 ```
+
+> **Important:** When using PAT auth, the key must be `token` (not `password`). Generate a PAT in Snowsight under **User Menu > Preferences > Programmatic Access Tokens**.
 
 > This file is gitignored and never committed. Each person running E2E tests creates their own.
 
@@ -687,8 +746,13 @@ snow sql -c my_account -f poc/teardown_poc.sql
 # 3. Start local Streamlit server (separate terminal, for E2E tests)
 cd poc && uv run streamlit run streamlit/streamlit_app.py --server.port 8504 --server.headless true
 
-# 4. Run all tests
-cd poc && uv run pytest tests/ -v
+# 4. Run all tests (E2E files separately — see Tier 2 note above)
+cd poc
+uv run pytest tests/test_data_validation.py tests/test_deployment_readiness.py tests/test_sql_integration.py tests/test_extraction_pipeline.py -v
+uv run pytest tests/test_e2e/test_poc_analytics.py -v
+uv run pytest tests/test_e2e/test_poc_dashboard.py -v
+uv run pytest tests/test_e2e/test_poc_document_viewer.py -v
+uv run pytest tests/test_e2e/test_poc_landing.py -v
 ```
 
 ### What the Tests Verify
