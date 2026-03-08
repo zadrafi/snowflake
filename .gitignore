@@ -35,3 +35,7 @@ secrets.*
 .gcp/
 .streamlit/secrets.toml
 streamlit/.streamlit/secrets.toml
+
+# Benchmark outputs
+poc/benchmark_results.json
+poc/sample_documents/_benchmark_tmp/

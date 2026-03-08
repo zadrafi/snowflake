@@ -47,7 +47,7 @@ class TestDocumentTypeCounts:
         rows = sf_session.sql(f"""
             SELECT COUNT(*) AS cnt FROM {DB}.RAW_DOCUMENTS
         """).collect()
-        assert rows[0]["CNT"] == 110
+        assert rows[0]["CNT"] == 130
 
 
 class TestExtractionIsolation:

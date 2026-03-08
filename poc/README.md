@@ -1,5 +1,7 @@
 # AI_EXTRACT POC Kit
 
+[![Tests](https://github.com/sfc-gh-jkang/ap-invoice-processing-demo/actions/workflows/test.yml/badge.svg)](https://github.com/sfc-gh-jkang/ap-invoice-processing-demo/actions/workflows/test.yml)
+
 Extract structured data from your own PDFs, images, and documents using **Snowflake Cortex AI_EXTRACT** — entirely within your Snowflake account. No external services, no API keys, no data leaves Snowflake.
 
 This kit walks you through a complete proof-of-concept:

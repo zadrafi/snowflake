@@ -39,8 +39,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-groups
 
-      - name: Run unit tests
-        run: uv run pytest tests/test_normalize_unit.py tests/test_review_helpers.py tests/test_config_helpers.py tests/test_edge_cases.py -v
+      - name: Run unit tests with coverage
+        run: |
+          uv run pytest \
+            tests/test_normalize_unit.py \
+            tests/test_review_helpers.py \
+            tests/test_config_helpers.py \
+            tests/test_admin_builder.py \
+            --cov=streamlit --cov-report=term-missing -v
 
       - name: Lint — compile check
         run: |
@@ -95,6 +101,7 @@ jobs:
         run: |
           uv run pytest tests/ \
             --ignore=tests/test_e2e \
+            --timeout=60 \
             -v --tb=short \
             --junitxml=test-results.xml
 
