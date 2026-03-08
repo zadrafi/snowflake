@@ -127,3 +127,131 @@ jobs:
         with:
           name: test-results
           path: poc/test-results.xml
+
+  # -----------------------------------------------------------------------
+  # E2E browser tests — requires Snowflake connection + Playwright
+  # -----------------------------------------------------------------------
+  e2e-tests:
+    name: E2E Browser Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    continue-on-error: true   # E2E tests are inherently flakier; don't block the pipeline
+    defaults:
+      run:
+        working-directory: poc
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+      POC_CONNECTION: ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Snowflake secrets are configured
+        id: check_secrets
+        run: |
+          if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$SNOWFLAKE_USER" ] || [ -z "$SNOWFLAKE_PASSWORD" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Snowflake secrets not configured — skipping E2E tests"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.check_secrets.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        if: steps.check_secrets.outputs.skip != 'true'
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        if: steps.check_secrets.outputs.skip != 'true'
+        run: uv sync --all-groups
+
+      - name: Install Playwright browsers
+        if: steps.check_secrets.outputs.skip != 'true'
+        run: uv run playwright install chromium --with-deps
+
+      - name: Configure Snowflake connection
+        if: steps.check_secrets.outputs.skip != 'true'
+        run: |
+          mkdir -p ~/.snowflake
+          cat > ~/.snowflake/connections.toml <<EOF
+          [ci]
+          account = "${SNOWFLAKE_ACCOUNT}"
+          user = "${SNOWFLAKE_USER}"
+          password = "${SNOWFLAKE_PASSWORD}"
+          database = "${POC_DB}"
+          schema = "${POC_SCHEMA}"
+          warehouse = "${POC_WH}"
+          role = "${POC_ROLE}"
+          EOF
+          chmod 0600 ~/.snowflake/connections.toml
+
+      - name: Configure Streamlit secrets
+        if: steps.check_secrets.outputs.skip != 'true'
+        run: |
+          mkdir -p streamlit/.streamlit
+          cat > streamlit/.streamlit/secrets.toml <<EOF
+          [connections.snowflake]
+          account = "${SNOWFLAKE_ACCOUNT}"
+          user = "${SNOWFLAKE_USER}"
+          password = "${SNOWFLAKE_PASSWORD}"
+          warehouse = "${POC_WH}"
+          database = "${POC_DB}"
+          schema = "${POC_SCHEMA}"
+          role = "${POC_ROLE}"
+          EOF
+          chmod 0600 streamlit/.streamlit/secrets.toml
+
+      - name: Start Streamlit server
+        if: steps.check_secrets.outputs.skip != 'true'
+        run: |
+          POC_CONNECTION=ci POC_DB="${POC_DB}" POC_SCHEMA="${POC_SCHEMA}" \
+            POC_WH="${POC_WH}" POC_ROLE="${POC_ROLE}" \
+            uv run streamlit run streamlit/streamlit_app.py \
+              --server.port 8504 --server.headless true \
+              --browser.gatherUsageStats false &
+          # Wait for server to be ready
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8504 | grep -q 200; then
+              echo "Streamlit server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run E2E tests (per-file for Playwright stability)
+        if: steps.check_secrets.outputs.skip != 'true'
+        run: |
+          EXIT_CODE=0
+          for test_file in \
+            tests/test_e2e/test_poc_landing.py \
+            tests/test_e2e/test_poc_dashboard.py \
+            tests/test_e2e/test_poc_document_viewer.py \
+            tests/test_e2e/test_poc_analytics.py \
+            tests/test_e2e/test_poc_review.py \
+            tests/test_e2e/test_poc_admin.py \
+            tests/test_e2e/test_poc_multi_doc.py; do
+            echo "--- Running $test_file ---"
+            uv run pytest "$test_file" \
+              --timeout=120 -v --tb=short \
+              --junitxml="e2e-results-$(basename $test_file .py).xml" || EXIT_CODE=1
+          done
+          exit $EXIT_CODE
+
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: always() && steps.check_secrets.outputs.skip != 'true'
+        with:
+          name: e2e-test-results
+          path: poc/e2e-results-*.xml
+
+      - name: Upload failure screenshots
+        uses: actions/upload-artifact@v4
+        if: failure() && steps.check_secrets.outputs.skip != 'true'
+        with:
+          name: e2e-screenshots
+          path: poc/screenshots/
+          if-no-files-found: ignore

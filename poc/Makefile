@@ -16,7 +16,7 @@ TEST_ENV = POC_CONNECTION=$(CONNECTION) POC_DB=$(POC_DB) POC_SCHEMA=$(POC_SCHEMA
            POC_WH=$(POC_WH) POC_ROLE=$(POC_ROLE)
 
 .PHONY: help install deploy teardown validate harden test test-all test-unit test-sql test-e2e \
-        test-coverage lint server generate-samples clean
+        test-coverage test-cross-cloud lint server upload-streamlit generate-samples clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -49,29 +49,22 @@ test-all: ## Run ALL tests except E2E (SQL + unit + integration)
 	  --ignore=tests/test_e2e -v
 
 test-unit: ## Run unit tests only (no Snowflake connection needed)
-	uv run pytest tests/test_normalize_unit.py \
-	  tests/test_review_helpers.py \
-	  tests/test_config_helpers.py \
-	  tests/test_edge_cases.py -v
+  uv run pytest tests/test_normalize_unit.py \
+    tests/test_review_helpers.py \
+    tests/test_config_helpers.py \
+    tests/test_admin_builder.py -v
 
-test-sql: ## Run SQL integration and pipeline tests
-	$(TEST_ENV) uv run pytest \
-	  tests/test_deployment_readiness.py \
-	  tests/test_sql_integration.py \
-	  tests/test_extraction_pipeline.py \
-	  tests/test_data_validation.py \
-	  tests/test_dashboard_queries.py \
-	  tests/test_analytics_queries.py \
-	  tests/test_document_viewer_queries.py \
-	  tests/test_batch_extract_integration.py \
-	  tests/test_spcs_deployment.py \
-	  tests/test_rbac_negative.py \
-	  tests/test_confidence_scoring.py \
-	  tests/test_utility_bill_extraction.py -v
+UNIT_TEST_FILES = tests/test_normalize_unit.py tests/test_review_helpers.py \
+    tests/test_config_helpers.py tests/test_admin_builder.py
+
+test-sql: ## Run all SQL integration tests (requires Snowflake connection)
+  $(TEST_ENV) uv run pytest tests/ \
+    --ignore=tests/test_e2e \
+    $(addprefix --ignore=,$(UNIT_TEST_FILES)) \
+    --timeout=120 -v
 
 test-e2e: ## Run ALL E2E browser tests (requires local Streamlit server)
-	$(TEST_ENV) uv run pytest tests/test_e2e/ \
-	  --ignore=tests/test_e2e/test_poc_review.py -v
+  $(TEST_ENV) uv run pytest tests/test_e2e/ --timeout=120 -v
 
 test-coverage: ## Run tests with coverage report (target: 80%)
 	$(TEST_ENV) uv run pytest tests/ \
@@ -98,6 +91,45 @@ generate-samples: ## Regenerate the 5 sample invoice PDFs
 	uv run python generate_sample_docs.py
 
 clean: ## Remove caches and test artifacts
-	rm -rf .pytest_cache __pycache__ tests/__pycache__ tests/test_e2e/__pycache__ \
-	  streamlit/__pycache__ streamlit/pages/__pycache__ \
-	  screenshots/ htmlcov/ .coverage dist/ build/
+  rm -rf .pytest_cache __pycache__ tests/__pycache__ tests/test_e2e/__pycache__ \
+    streamlit/__pycache__ streamlit/pages/__pycache__ \
+    screenshots/ htmlcov/ .coverage dist/ build/
+
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+
+upload-streamlit: ## Re-upload Streamlit files to STREAMLIT_STAGE (after code changes)
+  snow sql $(CONNECTION_FLAG) -q " \
+    USE ROLE $(POC_ROLE); \
+    USE DATABASE $(POC_DB); \
+    USE SCHEMA $(POC_SCHEMA); \
+    PUT file://streamlit/streamlit_app.py @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE; \
+    PUT file://streamlit/config.py @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE; \
+    PUT file://streamlit/environment.yml @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE; \
+    PUT file://streamlit/pages/0_Dashboard.py @STREAMLIT_STAGE/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE; \
+    PUT file://streamlit/pages/1_Document_Viewer.py @STREAMLIT_STAGE/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE; \
+    PUT file://streamlit/pages/2_Analytics.py @STREAMLIT_STAGE/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE; \
+    PUT file://streamlit/pages/3_Review.py @STREAMLIT_STAGE/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE; \
+    PUT file://streamlit/pages/4_Admin.py @STREAMLIT_STAGE/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE; \
+  "
+  @echo "Streamlit files uploaded. Restart the app in Snowsight to pick up changes."
+
+# ---------------------------------------------------------------------------
+# Cross-cloud testing
+# ---------------------------------------------------------------------------
+
+CLOUDS ?= aws_spcs azure_spcs gcp_spcs
+
+test-cross-cloud: ## Run non-E2E tests against all 3 clouds (AWS, Azure, GCP)
+  @for cloud in $(CLOUDS); do \
+    echo ""; \
+    echo "========================================"; \
+    echo "  Testing cloud: $$cloud"; \
+    echo "========================================"; \
+    POC_CONNECTION=$$cloud POC_DB=$(POC_DB) POC_SCHEMA=$(POC_SCHEMA) \
+      POC_WH=$(POC_WH) POC_ROLE=$(POC_ROLE) \
+      uv run pytest tests/ --ignore=tests/test_e2e --timeout=120 -v \
+      && echo "  ✓ $$cloud PASSED" \
+      || echo "  ✗ $$cloud FAILED"; \
+  done

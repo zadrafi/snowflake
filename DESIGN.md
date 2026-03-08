@@ -254,7 +254,7 @@ Stored Proc SP_EXTRACT_NEW_INVOICES:
 | SC-003 | Live extraction of 5 demo invoices completes within 2 minutes and results appear in the app |
 | SC-004 | An SE can deploy the full demo in under 15 minutes |
 | SC-005 | The demo tells a complete story (ingest → extract → automate → visualize) in a 20-minute meeting |
-| SC-006 | ~421 automated tests pass (non-E2E + E2E) covering SQL objects, data quality, RBAC, concurrency, and every Streamlit page |
+| SC-006 | ~999 automated tests pass (non-E2E + E2E) covering SQL objects, data quality, RBAC, concurrency, and every Streamlit page |
 | SC-007 | Full test suite passes on all three Snowflake clouds (AWS, Azure, GCP) with zero failures |
 | SC-008 | App runs with a least-privilege RBAC role (not ACCOUNTADMIN) on all three clouds |
 
@@ -299,7 +299,7 @@ Stored Proc SP_EXTRACT_NEW_INVOICES:
 
 ### Phase 8 — E2E Test Suite (Playwright)
 - Original demo app: 146 tests across 8 test files (6 functional + 2 integration)
-- POC kit: ~421 tests across 21 test files (16 non-E2E + 5 E2E)
+- POC kit: ~999 tests across 43 test files (36 non-E2E + 7 E2E)
 - Session-scoped server, fixtures, page object helpers
 
 ### Phase 9 — Documentation & Screenshots

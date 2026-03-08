@@ -2,7 +2,7 @@
 
 ## Test Architecture
 
-- ~421 tests across 21 files in `poc/tests/` (16 non-E2E + 5 E2E)
+- ~999 tests across 43 files in `poc/tests/` (36 non-E2E + 7 E2E)
 - Non-E2E tests connect to Snowflake directly via `snowflake.connector`
 - E2E tests use Playwright against a local Streamlit server on port 8504
 - `poc/conftest.py` manages Snowflake connection fixtures and Streamlit server lifecycle via double-fork daemon
@@ -67,30 +67,52 @@ All three Snowflake clouds have been validated with identical infrastructure:
 
 ```
 poc/tests/
-├── test_config.py                 # Config module unit tests
-├── test_data_drift.py             # Boundary values, schema evolution
-├── test_data_validation.py        # Data quality, completeness
-├── test_deployment_readiness.py   # Pre-flight: Cortex, encryption, stages, RBAC
-├── test_edge_cases.py             # Rollbacks, SQL injection, large data
-├── test_extraction_pipeline.py    # Live AI_EXTRACT, stored proc
-├── test_load_stress.py            # Bulk inserts, concurrent writers
-├── test_multi_user_concurrency.py # Interleaved reviews, race conditions
-├── test_performance.py            # Query latency benchmarks
-├── test_rbac_permissions.py       # Role-based access control checks
-├── test_review_helpers.py         # Review page helper functions
-├── test_sql_integration.py        # All SQL objects exist with correct schema
-├── test_sql_parity.py             # SQL script vs live object parity
-├── test_teardown_idempotency.py   # Teardown script idempotency
+├── test_admin_builder.py              # Admin page builder logic (unit — no Snowflake)
+├── test_admin_config_management.py    # Admin config CRUD operations
+├── test_analytics_queries.py          # Analytics page SQL queries
+├── test_batch_extract_integration.py  # Batch extraction integration
+├── test_confidence_scoring.py         # Confidence score tests
+├── test_config.py                     # Config module unit tests
+├── test_config_functions.py           # Config function tests
+├── test_config_helpers.py             # Config helper tests (unit — no Snowflake)
+├── test_contract_extraction.py        # Contract extraction quality
+├── test_cross_doc_isolation.py        # Cross-doc-type isolation
+├── test_dashboard_queries.py          # Dashboard page SQL queries
+├── test_data_drift.py                 # Boundary values, schema evolution
+├── test_data_validation.py            # Data quality, completeness
+├── test_deployment_readiness.py       # Pre-flight: Cortex, encryption, stages, RBAC
+├── test_document_type_flexibility.py  # Multi-doc-type support
+├── test_document_viewer_queries.py    # Document Viewer page SQL queries
+├── test_edge_cases.py                 # Rollbacks, SQL injection, large data
+├── test_extraction_pipeline.py        # Live AI_EXTRACT, stored proc
+├── test_load_stress.py                # Bulk inserts, concurrent writers
+├── test_multi_user_concurrency.py     # Interleaved reviews, race conditions
+├── test_normalize_unit.py             # Normalization unit tests (unit — no Snowflake)
+├── test_performance.py                # Query latency benchmarks
+├── test_phase_improvements.py         # Phase improvement validation
+├── test_rbac_negative.py              # RBAC negative/deny tests
+├── test_rbac_permissions.py           # Role-based access control checks
+├── test_receipt_extraction.py         # Receipt extraction quality
+├── test_review_helpers.py             # Review page helper functions (unit — no Snowflake)
+├── test_sp_error_handling.py          # Stored proc error handling
+├── test_spcs_deployment.py            # SPCS deployment tests
+├── test_sql_integration.py            # All SQL objects exist with correct schema
+├── test_sql_parity.py                 # SQL script vs live object parity
+├── test_teardown_idempotency.py       # Teardown script idempotency
+├── test_utility_bill_extraction.py    # Utility bill extraction quality
+├── test_validation_rules.py           # Validation rule tests
 ├── test_writeback_data_validation.py  # Writeback data quality
-├── test_writeback_integration.py  # INVOICE_REVIEW + V_INVOICE_SUMMARY
+├── test_writeback_integration.py      # INVOICE_REVIEW + V_INVOICE_SUMMARY
 └── test_e2e/
-    ├── conftest.py                # E2E fixtures + screenshot-on-failure
-    ├── helpers.py                 # Shared Playwright utilities
-    ├── test_poc_landing.py        # Landing page tests
-    ├── test_poc_dashboard.py      # Dashboard page tests
-    ├── test_poc_document_viewer.py # Document Viewer page tests
-    ├── test_poc_analytics.py      # Analytics page tests
-    └── test_poc_review.py         # Review page tests
+    ├── conftest.py                    # E2E fixtures + screenshot-on-failure
+    ├── helpers.py                     # Shared Playwright utilities
+    ├── test_poc_admin.py              # Admin page tests
+    ├── test_poc_analytics.py          # Analytics page tests
+    ├── test_poc_dashboard.py          # Dashboard page tests
+    ├── test_poc_document_viewer.py    # Document Viewer page tests
+    ├── test_poc_landing.py            # Landing page tests
+    ├── test_poc_multi_doc.py          # Multi-document-type flows
+    └── test_poc_review.py             # Review page tests
 ```
 
 ## Known Constraints

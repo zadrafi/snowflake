@@ -472,6 +472,60 @@ The `streamlit/` folder contains a 3-page Streamlit in Snowflake app. Deployment
 | **Analytics** | Bar chart by sender, monthly trend area chart, aging distribution, top 20 line items |
 | **Review** | Inline `st.data_editor` for reviewing/correcting extracted data, append-only audit trail, writeback to `INVOICE_REVIEW` |
 
+### Updating the Deployed App
+
+After making code changes to the Streamlit pages, re-upload the files and restart:
+
+```bash
+# Re-upload all Streamlit files to the stage
+make upload-streamlit CONNECTION=my_account
+
+# Or manually:
+snow sql -c my_account -q "
+  USE ROLE AI_EXTRACT_APP;
+  USE DATABASE AI_EXTRACT_POC;
+  USE SCHEMA DOCUMENTS;
+  PUT file://streamlit/streamlit_app.py @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+  PUT file://streamlit/config.py @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+  PUT file://streamlit/environment.yml @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+  PUT file://streamlit/pages/*.py @STREAMLIT_STAGE/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+"
+```
+
+Then restart the app in Snowsight (three-dot menu on the Streamlit app > Restart).
+
+### Deploying to a Customer Environment
+
+This POC is designed for Streamlit in Snowflake (SiS) — no SPCS containers needed. To deploy to a different Snowflake account:
+
+1. **Set environment variables** for the target account:
+   ```bash
+   export POC_CONNECTION=customer_account   # Name in ~/.snowflake/connections.toml
+   export POC_DB=AI_EXTRACT_POC             # Or customer-preferred name
+   export POC_SCHEMA=DOCUMENTS
+   export POC_WH=AI_EXTRACT_WH
+   export POC_ROLE=AI_EXTRACT_APP
+   ```
+
+2. **Deploy** (runs all 11 SQL scripts + uploads files + validates):
+   ```bash
+   make deploy CONNECTION=customer_account
+   ```
+
+3. **Validate** the deployment:
+   ```bash
+   make validate CONNECTION=customer_account
+   ```
+
+4. **Run tests** against the target account:
+   ```bash
+   make test-all CONNECTION=customer_account
+   ```
+
+5. **Upload customer documents** and run extraction (see [Using Your Own Documents](#using-your-own-documents)).
+
+> **Note:** ACCOUNTADMIN is only needed during initial deploy for role creation, Cortex grants, and the PyPI External Access Integration. All app operations use the `AI_EXTRACT_APP` role.
+
 ---
 
 ## Setting Up Automation
@@ -744,30 +798,52 @@ ai_extract_poc/
 │       └── 4_Admin.py                     # Document type config management
 └── tests/
     ├── __init__.py                        # Package marker
-    ├── test_config.py                     # Config module unit tests (6 tests)
-    ├── test_deployment_readiness.py       # Pre-flight checks: Cortex, encryption, EAI (12 tests)
-    ├── test_sql_integration.py            # All SQL objects exist with correct schema (45 tests)
-    ├── test_extraction_pipeline.py        # Live AI_EXTRACT, stored proc, idempotency (22 tests)
-    ├── test_data_validation.py            # Data quality, completeness, no orphans (36 tests)
-    ├── test_writeback_integration.py      # INVOICE_REVIEW table + V_INVOICE_SUMMARY (19 tests)
-    ├── test_writeback_data_validation.py  # Writeback data quality + COALESCE logic (20 tests)
-    ├── test_review_helpers.py             # Review page helper functions (43 tests)
-    ├── test_sql_parity.py                 # SQL script vs live object parity (10 tests)
-    ├── test_rbac_permissions.py           # Role-based access control checks (20 tests)
-    ├── test_performance.py                # Query latency benchmarks (12 tests)
-    ├── test_teardown_idempotency.py       # Teardown script idempotency (15 tests)
-    ├── test_load_stress.py                # Bulk inserts + concurrent writers (7 tests)
-    ├── test_multi_user_concurrency.py     # Interleaved reviews + race conditions (7 tests)
-    ├── test_data_drift.py                 # Boundary values + schema evolution (13 tests)
-    ├── test_edge_cases.py                 # Rollbacks, SQL injection, large data, gaps (33 tests)
+    ├── test_admin_builder.py              # Admin page builder logic (unit — no Snowflake)
+    ├── test_admin_config_management.py    # Admin config CRUD operations
+    ├── test_analytics_queries.py          # Analytics page SQL queries
+    ├── test_batch_extract_integration.py  # Batch extraction integration
+    ├── test_confidence_scoring.py         # Confidence score tests
+    ├── test_config.py                     # Config module unit tests
+    ├── test_config_functions.py           # Config function tests
+    ├── test_config_helpers.py             # Config helper tests (unit — no Snowflake)
+    ├── test_contract_extraction.py        # Contract extraction quality
+    ├── test_cross_doc_isolation.py        # Cross-doc-type isolation
+    ├── test_dashboard_queries.py          # Dashboard page SQL queries
+    ├── test_data_drift.py                 # Boundary values, schema evolution
+    ├── test_data_validation.py            # Data quality, completeness
+    ├── test_deployment_readiness.py       # Pre-flight checks: Cortex, encryption, EAI
+    ├── test_document_type_flexibility.py  # Multi-doc-type support
+    ├── test_document_viewer_queries.py    # Document Viewer page SQL queries
+    ├── test_edge_cases.py                 # Rollbacks, SQL injection, large data, gaps
+    ├── test_extraction_pipeline.py        # Live AI_EXTRACT, stored proc, idempotency
+    ├── test_load_stress.py                # Bulk inserts + concurrent writers
+    ├── test_multi_user_concurrency.py     # Interleaved reviews + race conditions
+    ├── test_normalize_unit.py             # Normalization unit tests (unit — no Snowflake)
+    ├── test_performance.py                # Query latency benchmarks
+    ├── test_phase_improvements.py         # Phase improvement validation
+    ├── test_rbac_negative.py              # RBAC negative/deny tests
+    ├── test_rbac_permissions.py           # Role-based access control checks
+    ├── test_receipt_extraction.py         # Receipt extraction quality
+    ├── test_review_helpers.py             # Review page helper functions (unit — no Snowflake)
+    ├── test_sp_error_handling.py          # Stored proc error handling
+    ├── test_spcs_deployment.py            # SPCS deployment tests
+    ├── test_sql_integration.py            # All SQL objects exist with correct schema
+    ├── test_sql_parity.py                 # SQL script vs live object parity
+    ├── test_teardown_idempotency.py       # Teardown script idempotency
+    ├── test_utility_bill_extraction.py    # Utility bill extraction quality
+    ├── test_validation_rules.py           # Validation rule tests
+    ├── test_writeback_data_validation.py  # Writeback data quality + COALESCE logic
+    ├── test_writeback_integration.py      # INVOICE_REVIEW + V_INVOICE_SUMMARY
     └── test_e2e/
         ├── __init__.py                    # Package marker
         ├── conftest.py                    # E2E fixtures + screenshot-on-failure (daemon thread)
         ├── helpers.py                     # Shared Playwright utilities (wait_for_streamlit)
-        ├── test_poc_landing.py            # Landing page tests
+        ├── test_poc_admin.py              # Admin page tests
+        ├── test_poc_analytics.py          # Analytics page tests
         ├── test_poc_dashboard.py          # Dashboard page tests
         ├── test_poc_document_viewer.py    # Document Viewer page tests
-        ├── test_poc_analytics.py          # Analytics page tests
+        ├── test_poc_landing.py            # Landing page tests
+        ├── test_poc_multi_doc.py          # Multi-document-type flows
         └── test_poc_review.py             # Review page tests
 ```
 
@@ -1008,6 +1084,8 @@ uv run pytest tests/test_e2e/test_poc_dashboard.py -v
 uv run pytest tests/test_e2e/test_poc_document_viewer.py -v
 uv run pytest tests/test_e2e/test_poc_analytics.py -v
 uv run pytest tests/test_e2e/test_poc_review.py -v
+uv run pytest tests/test_e2e/test_poc_admin.py -v
+uv run pytest tests/test_e2e/test_poc_multi_doc.py -v
 ```
 
 > **Why run E2E files separately?** Playwright's Chromium process can become unstable after
@@ -1040,30 +1118,52 @@ uv run pytest tests/test_e2e/test_poc_dashboard.py -v
 uv run pytest tests/test_e2e/test_poc_document_viewer.py -v
 uv run pytest tests/test_e2e/test_poc_analytics.py -v
 uv run pytest tests/test_e2e/test_poc_review.py -v
+uv run pytest tests/test_e2e/test_poc_admin.py -v
+uv run pytest tests/test_e2e/test_poc_multi_doc.py -v
 ```
 
 ### What the Tests Verify
 
 | Test File | Count | What It Checks |
 |---|---|---|
-| `test_config.py` | 6 | Config module: env var overrides, defaults, connection name resolution |
-| `test_deployment_readiness.py` | 12 | Pre-flight: Cortex access, SSE encryption, staged files, EAI, compute pool, Streamlit stage |
-| `test_sql_integration.py` | 45 | Every SQL object: database, schema, warehouse, stages, tables, columns, PKs, views, stream, task, stored proc, INVOICE_REVIEW, V_INVOICE_SUMMARY |
-| `test_extraction_pipeline.py` | 22 | Live AI_EXTRACT calls (entity + table mode), stored procedure execution, idempotency, LATERAL FLATTEN |
-| `test_data_validation.py` | 36 | Data quality: completeness, no NULLs in required fields, amounts > 0, valid dates, no orphans, no duplicates |
-| `test_writeback_integration.py` | 19 | INVOICE_REVIEW table operations, V_INVOICE_SUMMARY view, append-only behavior, COALESCE override logic |
-| `test_writeback_data_validation.py` | 20 | Writeback data quality, corrected field types, review status values, FK integrity |
-| `test_review_helpers.py` | 43 | Review page helper functions: data loading, save logic, status transitions, validation |
-| `test_sql_parity.py` | 10 | SQL script DDL matches live Snowflake objects (column count, types, constraints) |
-| `test_rbac_permissions.py` | 20 | Role-based access control: table grants, view grants, stage access, procedure execute |
-| `test_performance.py` | 12 | Query latency benchmarks: views return within thresholds, index usage, no full scans |
+| `test_admin_builder.py` | 16 | Admin page builder logic: prompt generation, field labels, review fields, table schema |
+| `test_admin_config_management.py` | 14 | Admin config CRUD: insert, update, duplicate detection, delete/reinsert, null handling |
+| `test_analytics_queries.py` | 10 | Analytics page SQL queries: vendor breakdown, monthly trends, aging, top items |
+| `test_batch_extract_integration.py` | 16 | Batch extraction pipeline: stored proc, parallel files, error recovery |
+| `test_confidence_scoring.py` | 43 | Confidence score calculations across document types |
+| `test_config.py` | 20 | Config module: env var overrides, defaults, connection name resolution |
+| `test_config_functions.py` | 31 | Config function tests: label parsing, type mapping, field name extraction |
+| `test_config_helpers.py` | 39 | Config helper tests: variant parsing, doc type queries (unit — no Snowflake) |
+| `test_contract_extraction.py` | 37 | Contract extraction quality: field accuracy, party names, dates, values |
+| `test_cross_doc_isolation.py` | 14 | Cross-doc-type isolation: no data leakage between INVOICE/CONTRACT/RECEIPT |
+| `test_dashboard_queries.py` | 12 | Dashboard page SQL queries: KPI cards, recent documents, doc_type filtering |
+| `test_data_drift.py` | 13 | Boundary values (Unicode, large strings, max precision), NULL COALESCE, schema evolution |
+| `test_data_validation.py` | 36 | Data quality: completeness, no NULLs in required fields, amounts > 0, valid dates |
+| `test_deployment_readiness.py` | 12 | Pre-flight: Cortex access, SSE encryption, staged files, EAI, compute pool |
+| `test_document_type_flexibility.py` | 65 | Multi-doc-type support: config-driven extraction, label mapping, type switching |
+| `test_document_viewer_queries.py` | 14 | Document Viewer page SQL queries: filtering, detail view, PDF rendering |
+| `test_edge_cases.py` | 33 | AUTOINCREMENT gaps, transaction rollbacks, SQL injection, empty-table cold start |
+| `test_extraction_pipeline.py` | 22 | Live AI_EXTRACT (entity + table mode), stored proc execution, idempotency |
+| `test_load_stress.py` | 7 | Bulk inserts (50 sequential), concurrent writers (5 threads) |
+| `test_multi_user_concurrency.py` | 7 | Interleaved reviews, simultaneous writes with threading.Barrier, race conditions |
+| `test_normalize_unit.py` | 49 | Normalization unit tests: currency parsing, date formats, field cleaning |
+| `test_performance.py` | 12 | Query latency benchmarks: views return within thresholds |
+| `test_phase_improvements.py` | 21 | Phase improvement validation: all enhancement features working |
+| `test_rbac_negative.py` | 17 | RBAC negative/deny tests: unauthorized role cannot access protected objects |
+| `test_rbac_permissions.py` | 22 | Role-based access control: table grants, view grants, stage access, procedure execute |
+| `test_receipt_extraction.py` | 33 | Receipt extraction quality: store name, total, payment method, line items |
+| `test_review_helpers.py` | 43 | Review page helper functions: data loading, save logic, status transitions |
+| `test_sp_error_handling.py` | 12 | Stored procedure error handling: invalid inputs, missing files, exception paths |
+| `test_spcs_deployment.py` | 34 | SPCS deployment tests: compute pool, network rules, Streamlit app object |
+| `test_sql_integration.py` | 52 | Every SQL object: tables, columns, PKs, views, stream, task, stored proc |
+| `test_sql_parity.py` | 10 | SQL script DDL matches live Snowflake objects |
 | `test_teardown_idempotency.py` | 15 | Teardown script is idempotent (safe to run multiple times) |
-| `test_load_stress.py` | 7 | Bulk inserts (50 sequential), concurrent writers (5 threads), concurrent read+write on view |
-| `test_multi_user_concurrency.py` | 7 | Interleaved reviews, simultaneous writes with threading.Barrier, rapid overwrites, race conditions |
-| `test_data_drift.py` | 13 | Boundary values (Unicode, large strings, max precision), NULL COALESCE patterns, schema evolution (ADD/DROP COLUMN) |
-| `test_edge_cases.py` | 33 | AUTOINCREMENT gaps, transaction rollbacks, column defaults, 100K-char notes, SQL injection, empty-table cold start, duplicate filenames, boundary record_ids, concurrent schema changes |
-| `test_e2e/` (5 files) | 72 | Playwright browser tests: every Streamlit page loads (including Review), no exceptions, KPIs render, charts display, data_editor functions, doc_type filtering |
-| **Total** | **~421** | **~350 non-E2E + ~71 E2E (exact counts vary by cloud; 3-4 skipped)** |
+| `test_utility_bill_extraction.py` | 49 | Utility bill extraction quality: account number, service dates, charges |
+| `test_validation_rules.py` | 27 | Validation rule tests: per-doc-type rules, boundary conditions |
+| `test_writeback_data_validation.py` | 20 | Writeback data quality, corrected field types, review status values |
+| `test_writeback_integration.py` | 19 | INVOICE_REVIEW table operations, V_INVOICE_SUMMARY, COALESCE override |
+| `test_e2e/` (7 files) | 103 | Playwright browser tests: all 5 pages + Admin + multi-doc flows, no exceptions |
+| **Total** | **~999** | **896 non-E2E + 103 E2E across 43 test files** |
 
 ### Cross-Cloud Verification
 
@@ -1101,6 +1201,15 @@ POC_CONNECTION=azure_spcs POC_DB=AI_EXTRACT_POC POC_SCHEMA=DOCUMENTS \
   POC_WH=AI_EXTRACT_WH POC_ROLE=AI_EXTRACT_APP \
   uv run pytest tests/test_e2e/ -v
 ```
+
+**Shortcut — run all three clouds in one command:**
+
+```bash
+make test-cross-cloud                    # defaults: aws_spcs, azure_spcs, gcp_spcs
+make test-cross-cloud CLOUDS="aws_spcs azure_spcs"  # subset of clouds
+```
+
+This iterates each connection, runs all non-E2E tests, and prints a per-cloud PASSED / FAILED summary.
 
 > **Note:** The `POC_ROLE` env var tells `conftest.py` to `USE ROLE <role>` before running any queries. This ensures tests run with the same least-privilege role used by the app, not ACCOUNTADMIN.
 
