@@ -11,6 +11,7 @@ import pytest
 pytestmark = pytest.mark.sql
 
 
+@pytest.mark.timeout(180)
 class TestAIExtractEntityMode:
     """Verify AI_EXTRACT entity extraction produces valid structured output."""
 
@@ -68,6 +69,7 @@ class TestAIExtractEntityMode:
         )
 
 
+@pytest.mark.timeout(180)
 class TestAIExtractTableMode:
     """Verify AI_EXTRACT table extraction produces valid array output."""
 

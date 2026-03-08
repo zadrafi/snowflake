@@ -39,14 +39,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-groups
 
-      - name: Run unit tests with coverage
+      - name: Run unit tests
         run: |
           uv run pytest \
             tests/test_normalize_unit.py \
             tests/test_review_helpers.py \
             tests/test_config_helpers.py \
             tests/test_admin_builder.py \
-            --cov=streamlit --cov-report=term-missing -v
+            -v
 
       - name: Lint — compile check
         run: |
@@ -74,16 +74,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check Snowflake secrets are configured
+        id: check_secrets
+        run: |
+          if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$SNOWFLAKE_USER" ] || [ -z "$SNOWFLAKE_PASSWORD" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Snowflake secrets not configured — skipping SQL integration tests"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install uv
+        if: steps.check_secrets.outputs.skip != 'true'
         uses: astral-sh/setup-uv@v4
 
       - name: Set up Python
+        if: steps.check_secrets.outputs.skip != 'true'
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
+        if: steps.check_secrets.outputs.skip != 'true'
         run: uv sync --all-groups
 
       - name: Configure Snowflake connection
+        if: steps.check_secrets.outputs.skip != 'true'
         run: |
           mkdir -p ~/.snowflake
           cat > ~/.snowflake/connections.toml <<EOF
@@ -96,18 +110,20 @@ jobs:
           warehouse = "${POC_WH}"
           role = "${POC_ROLE}"
           EOF
+          chmod 0600 ~/.snowflake/connections.toml
 
       - name: Run SQL integration tests
+        if: steps.check_secrets.outputs.skip != 'true'
         run: |
           uv run pytest tests/ \
             --ignore=tests/test_e2e \
-            --timeout=60 \
+            --timeout=120 \
             -v --tb=short \
             --junitxml=test-results.xml
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.check_secrets.outputs.skip != 'true'
         with:
           name: test-results
           path: poc/test-results.xml

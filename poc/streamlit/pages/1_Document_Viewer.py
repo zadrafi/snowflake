@@ -23,6 +23,38 @@ session = get_session()
 st.title("Document Viewer")
 st.caption("Browse extracted documents — select any row to view source PDF and extracted fields")
 
+
+# ---------------------------------------------------------------------------
+# Helper: Render fields dynamically from raw_extraction VARIANT
+# ---------------------------------------------------------------------------
+def _label_for_key(key: str, doc_labels: dict) -> str:
+    """Look up a display label for a raw_extraction field key."""
+    for lbl_key, lbl_val in doc_labels.items():
+        if lbl_val and key.lower().replace("_", " ") == lbl_val.lower().replace("_", " "):
+            return lbl_val
+    return key.replace("_", " ").title()
+
+
+def _render_dynamic_fields(raw: dict, doc_labels: dict):
+    """Render all fields from raw_extraction JSON using config labels."""
+    field_keys = list(raw.keys())
+    mid = (len(field_keys) + 1) // 2
+    left_keys = field_keys[:mid]
+    right_keys = field_keys[mid:]
+
+    h1, h2 = st.columns(2)
+    with h1:
+        for key in left_keys:
+            label = _label_for_key(key, doc_labels)
+            val = raw.get(key)
+            st.markdown(f"**{label}:** {val or 'N/A'}")
+    with h2:
+        for key in right_keys:
+            label = _label_for_key(key, doc_labels)
+            val = raw.get(key)
+            st.markdown(f"**{label}:** {val or 'N/A'}")
+
+
 # --- Filters ---
 col_f0, col_f1, col_f2 = st.columns(3)
 
@@ -299,40 +331,3 @@ if len(ledger_df) > 0:
 else:
     st.info("No documents match the selected filters.")
 
-
-# ---------------------------------------------------------------------------
-# Helper: Render fields dynamically from raw_extraction VARIANT
-# ---------------------------------------------------------------------------
-def _render_dynamic_fields(raw: dict, doc_labels: dict):
-    """Render all fields from raw_extraction JSON using config labels."""
-    # Split fields into two columns for display
-    field_keys = list(raw.keys())
-    mid = (len(field_keys) + 1) // 2
-    left_keys = field_keys[:mid]
-    right_keys = field_keys[mid:]
-
-    h1, h2 = st.columns(2)
-    with h1:
-        for key in left_keys:
-            label = _label_for_key(key, doc_labels)
-            val = raw.get(key)
-            st.markdown(f"**{label}:** {val or 'N/A'}")
-    with h2:
-        for key in right_keys:
-            label = _label_for_key(key, doc_labels)
-            val = raw.get(key)
-            st.markdown(f"**{label}:** {val or 'N/A'}")
-
-
-def _label_for_key(key: str, doc_labels: dict) -> str:
-    """Look up a display label for a raw_extraction field key.
-
-    First checks doc_labels values (since labels map field_N -> display name,
-    but raw keys are like 'vendor_name'). Falls back to title-casing the key.
-    """
-    # Direct match in labels values (unlikely but check)
-    for lbl_key, lbl_val in doc_labels.items():
-        if lbl_val and key.lower().replace("_", " ") == lbl_val.lower().replace("_", " "):
-            return lbl_val
-    # Fallback: title-case the key
-    return key.replace("_", " ").title()

@@ -301,10 +301,22 @@ class TestAdminShowsAllTypes:
         _navigate_admin(page, app_url)
         if not _has_admin_data(page):
             pytest.skip("No config data in admin page")
-        df = page.locator('[data-testid="stDataFrame"]').first
-        text = df.inner_text().upper()
+        # The dataframe uses Glide Data Grid (canvas) so inner_text() won't
+        # capture cell values.  Instead, check the "Select type to view"
+        # selectbox which lists all configured doc types as real DOM options.
+        selectboxes = page.locator('[data-testid="stSelectbox"]')
+        if selectboxes.count() == 0:
+            pytest.skip("No selectbox for type selection on admin page")
+        sb = selectboxes.first
+        sb.click()
+        page.wait_for_timeout(500)
+        options = page.locator('[data-testid="stSelectboxVirtualDropdown"] [role="option"]')
+        option_texts = [options.nth(i).inner_text().upper() for i in range(options.count())]
+        sb.press("Escape")
         for doc_type in ["INVOICE", "CONTRACT", "RECEIPT", "UTILITY_BILL"]:
-            assert doc_type in text, f"{doc_type} not in admin config table"
+            assert doc_type in option_texts, (
+                f"{doc_type} not in admin selectbox options: {option_texts}"
+            )
 
     def test_admin_contract_has_validation_rules(self, page, app_url):
         """CONTRACT detail should show validation_rules content."""
