@@ -873,6 +873,11 @@ ai_extract_poc/
 | Streamlit app shows errors | Views or tables don't exist yet | Run scripts 01-05 before deploying the Streamlit app |
 | `PYPI_ACCESS_INTEGRATION` error | EAI not created or not granted | Run the EAI creation in `07_deploy_streamlit.sql` as ACCOUNTADMIN |
 | Duplicate rows in `EXTRACTED_FIELDS` | Script was run twice on same files | The scripts include `NOT IN (SELECT file_name FROM ...)` guards, but if you re-run manually, check for duplicates: `SELECT file_name, COUNT(*) FROM EXTRACTED_FIELDS GROUP BY 1 HAVING COUNT(*) > 1` |
+| E2E: `inner_text()` returns empty on data grid | Glide Data Grid renders in `<canvas>`, not DOM | Use `page.inner_text("body")` or click open selectbox dropdowns to expose text in DOM |
+| E2E: Test expects "Invoices" but sees "Contracts" | Selectbox default is alphabetically first doc type | Make assertions doc-type-agnostic or explicitly select the expected type first |
+| E2E: "Vendor" label not found | "Vendor" is INVOICE-specific; other doc types show different labels | Assert on universal labels like "Status" or select INVOICE before asserting |
+| Azure/GCP: `CREATE STREAMLIT` fails | Streamlit files not uploaded to stage | `PUT` all files (`.py`, `pyproject.toml`, `environment.yml`, `snowflake.yml`) before creating the app |
+| Azure/GCP: `CREATE COMPUTE POOL` access denied | Running as app role, not ACCOUNTADMIN | Compute pools, network rules, and EAI require `USE ROLE ACCOUNTADMIN` |
 
 ---
 
@@ -1968,6 +1973,21 @@ SELECT e.file_name, e.raw_extraction FROM EXTRACTED_FIELDS e JOIN RAW_DOCUMENTS 
 - **Modify existing records** for edge cases (e.g., NULL out a field on an existing row)
 - **Replace `pytest.skip()` with real data** — deploy the data the test needs, then remove the skip
 - **Use `autouse` fixtures** to check for required data and skip gracefully only when the data genuinely doesn't exist
+
+### 6. Playwright E2E Testing with Streamlit
+
+- **Glide Data Grid renders in `<canvas>`, not DOM text.** `st.dataframe` and `st.data_editor` use Glide Data Grid which paints cells on an HTML canvas. Playwright's `inner_text()` on the `stDataFrame` container returns an empty string. Workaround: read text from surrounding page chrome (selectboxes, markdown, full `page.inner_text("body")`) instead of the grid element itself. To verify doc-type names exist, click open a selectbox dropdown to expose its options in the DOM.
+- **Streamlit selectbox defaults are alphabetical.** When `st.selectbox` is populated from a database query (e.g., configured doc types), the default selection is the first value in sort order — not necessarily the one you expect. Don't hardcode `"Invoices"` in assertions when `"Contracts"` comes first alphabetically. Use doc-type-agnostic patterns like regex `\(\d+ results?\)` instead.
+- **Filter-specific labels aren't universal.** A label like "Vendor" only appears when INVOICE is selected; Contracts show "Party" instead. Assert on universal labels (e.g., "Status") or explicitly select the expected doc type before asserting on type-specific content.
+- **E2E timing flakes vs real failures — retry once to distinguish.** If a test passes on retry, it's a timing flake (page not fully rendered). If it fails consistently, the test logic is wrong. One quick retry run saves hours of debugging.
+- **`wait_for_timeout()` is necessary but fragile.** Streamlit re-renders asynchronously after data loads. A 2-3 second `page.wait_for_timeout()` after navigation helps, but isn't guaranteed. Prefer waiting for specific DOM elements (`page.locator('[data-testid="stDataFrame"]').count() > 0`) before asserting.
+
+### 7. Cross-Cloud Deployment
+
+- **SQL scripts don't upload files.** Running `01_setup.sql` through `08_teardown.sql` creates database objects but does NOT upload Streamlit files to the stage. Each cloud requires explicit `PUT` of all files (`.py`, `pyproject.toml`, `environment.yml`, `snowflake.yml`) before `CREATE STREAMLIT ... FROM '@STAGE'` will work.
+- **ACCOUNTADMIN is required for infrastructure, not the app.** Compute pools, network rules, and External Access Integrations all require `ACCOUNTADMIN`. The app role (`AI_EXTRACT_APP`) can't create them. Pattern: ACCOUNTADMIN creates infra + grants, then switch to app role for `CREATE STREAMLIT`.
+- **Test skip counts vary by data volume.** Azure/GCP with 100 documents skip ~142 tests that pass on AWS (130 documents). Skip guards like "at least N rows exist" cause this. The skipped tests aren't broken — they just lack the data to exercise those code paths.
+- **AWS runs slower because it runs more tests.** 990 actual executions vs 846 on Azure/GCP. Combined with more rows per query (130 vs 100 docs), AWS takes ~2x the wall-clock time. Per-test speed is comparable across clouds.
 
 ---
 
