@@ -81,8 +81,12 @@ class TestReviewPageFilters:
     def test_invoice_count_label(self, page, app_url):
         _navigate(page, app_url)
         page_text = page.inner_text("body")
-        assert "Invoices" in page_text and "results" in page_text, (
-            "Expected 'Invoices (N results)' heading"
+        # The default doc type depends on alphabetical order of configured
+        # types (e.g. Contracts, Invoices, Receipts).  Verify any doc type
+        # heading with a "(N results)" count is shown.
+        import re
+        assert re.search(r"\(\d+ results?\)", page_text), (
+            "Expected a '(N results)' count heading on the review page"
         )
 
 
@@ -107,10 +111,8 @@ class TestReviewDataEditor:
         """Key UI elements should be visible on the review page."""
         _navigate(page, app_url)
         page_text = page.inner_text("body")
-        # Data editor grid headers (Glide) render in canvas, not in DOM text.
-        # Verify labels that appear in filters and page chrome instead.
-        for label in ["Vendor", "Status"]:
-            assert label in page_text, f"Label '{label}' not found on review page"
+        # "Status" filter label is universal across all doc types.
+        assert "Status" in page_text, "Status label not found on review page"
         # Data editor itself should be present with rows
         editor = page.locator('[data-testid="stDataFrame"]')
         assert editor.count() >= 1, "Data editor not found on review page"
