@@ -1171,7 +1171,7 @@ uv run pytest tests/test_e2e/test_poc_multi_doc.py -v
 | `test_writeback_data_validation.py` | 20 | Writeback data quality, corrected field types, review status values |
 | `test_writeback_integration.py` | 19 | INVOICE_REVIEW table operations, V_INVOICE_SUMMARY, COALESCE override |
 | `test_e2e/` (7 files) | 103 | Playwright browser tests: all 5 pages + Admin + multi-doc flows, no exceptions |
-| **Total** | **~1,080** | **977 non-E2E + 103 E2E across 44 test files** |
+| **Total** | **~1,081** | **978 non-E2E + 103 E2E across 44 test files** |
 
 ### Cross-Cloud Verification
 

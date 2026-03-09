@@ -62,23 +62,25 @@ SELECT
     rd.doc_type,
 
     -- Best-known values: VARIANT correction > legacy correction > original
+    -- TRY_TO_* functions ensure bad data in VARIANT falls through gracefully
+    -- instead of crashing the view (defense-in-depth for NUMBER/DATE casts).
     COALESCE(rv.corrections:vendor_name::VARCHAR,    rv.corrected_vendor_name,    ef.field_1)   AS vendor_name,
     COALESCE(rv.corrections:invoice_number::VARCHAR, rv.corrected_invoice_number, ef.field_2)   AS invoice_number,
     COALESCE(rv.corrections:po_number::VARCHAR,      rv.corrected_po_number,      ef.field_3)   AS po_number,
-    COALESCE(rv.corrections:invoice_date::DATE,      rv.corrected_invoice_date,   ef.field_4)   AS invoice_date,
-    COALESCE(rv.corrections:due_date::DATE,          rv.corrected_due_date,       ef.field_5)   AS due_date,
+    COALESCE(TRY_TO_DATE(rv.corrections:invoice_date::VARCHAR),   rv.corrected_invoice_date,   ef.field_4)   AS invoice_date,
+    COALESCE(TRY_TO_DATE(rv.corrections:due_date::VARCHAR),       rv.corrected_due_date,       ef.field_5)   AS due_date,
     COALESCE(rv.corrections:payment_terms::VARCHAR,  rv.corrected_payment_terms,  ef.field_6)   AS payment_terms,
     COALESCE(rv.corrections:recipient::VARCHAR,      rv.corrected_recipient,      ef.field_7)   AS recipient,
-    COALESCE(rv.corrections:subtotal::NUMBER(12,2),  rv.corrected_subtotal,       ef.field_8)   AS subtotal,
-    COALESCE(rv.corrections:tax_amount::NUMBER(12,2),rv.corrected_tax_amount,     ef.field_9)   AS tax_amount,
-    COALESCE(rv.corrections:total_amount::NUMBER(12,2), rv.corrected_total,        ef.field_10)  AS total_amount,
+    COALESCE(TRY_TO_NUMBER(rv.corrections:subtotal::VARCHAR, 12, 2),    rv.corrected_subtotal,       ef.field_8)   AS subtotal,
+    COALESCE(TRY_TO_NUMBER(rv.corrections:tax_amount::VARCHAR, 12, 2),  rv.corrected_tax_amount,     ef.field_9)   AS tax_amount,
+    COALESCE(TRY_TO_NUMBER(rv.corrections:total_amount::VARCHAR, 12, 2),   rv.corrected_total,        ef.field_10)  AS total_amount,
 
     ef.status                           AS extraction_status,
     ef.extracted_at,
 
     -- Aggregated line-item metrics (with VARIANT override)
-    COALESCE(rv.corrections:line_item_count::NUMBER, li.line_item_count)                      AS line_item_count,
-    COALESCE(rv.corrections:computed_line_total::NUMBER(12,2), li.computed_line_total)         AS computed_line_total,
+    COALESCE(TRY_TO_NUMBER(rv.corrections:line_item_count::VARCHAR), li.line_item_count)                      AS line_item_count,
+    COALESCE(TRY_TO_NUMBER(rv.corrections:computed_line_total::VARCHAR, 12, 2), li.computed_line_total)         AS computed_line_total,
 
     -- Latest review info (NULL if not yet reviewed)
     rv.review_status,

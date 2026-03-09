@@ -744,12 +744,12 @@ class TestUserWorkflowEdgeCases:
             f"Max NUMBER(12,2) not stored: got {row[3]}"
         )
 
-    def test_23_overflow_number_12_2_breaks_view(self, sf_cursor, edge_targets):
-        """Overflow value in VARIANT — INSERT succeeds but VIEW cast fails.
+    def test_23_overflow_number_12_2_falls_through(self, sf_cursor, edge_targets):
+        """Overflow value in VARIANT — TRY_TO_NUMBER returns NULL, falls through.
 
-        The VARIANT column stores any JSON value.  The view casts to
-        NUMBER(12,2) which overflows.  This proves the failure is graceful
-        (query error, not data corruption).
+        The VARIANT column stores any JSON value.  The view uses
+        TRY_TO_NUMBER which returns NULL for overflow, so COALESCE
+        falls through to the original extraction value.
         """
         t = edge_targets[4]
         rid, fname = t["RECORD_ID"], t["FILE_NAME"]
@@ -771,15 +771,13 @@ class TestUserWorkflowEdgeCases:
         stored = sf_cursor.fetchone()
         assert stored is not None, "INSERT should have succeeded"
 
-        # The VIEW query should fail with overflow error
-        with pytest.raises(Exception, match="(?i)out of.*range|overflow|numeric"):
-            self._view_row(sf_cursor, rid)
-
-        # Clean up the overflow row so it doesn't break subsequent view queries
-        sf_cursor.execute(
-            f"DELETE FROM {FQ}.INVOICE_REVIEW "
-            f"WHERE record_id = %s AND reviewer_notes LIKE %s",
-            (rid, f"{TAG_EDGE}overflow_23%"),
+        # The VIEW should NOT crash — TRY_TO_NUMBER returns NULL,
+        # COALESCE falls through to the original value
+        row = self._view_row(sf_cursor, rid)
+        assert row is not None, "View should not crash on overflow"
+        assert float(row[3]) == float(t["TOTAL_AMOUNT"]), (
+            f"Overflow should fall through to original {t['TOTAL_AMOUNT']}, "
+            f"got {row[3]}"
         )
 
     def test_24_decimal_precision_rounding(self, sf_cursor, edge_targets):
@@ -787,7 +785,7 @@ class TestUserWorkflowEdgeCases:
         t = edge_targets[4]
         rid, fname = t["RECORD_ID"], t["FILE_NAME"]
 
-        # After overflow cleanup, insert a valid row
+        sf_cursor.execute("SELECT SYSTEM$WAIT(1)")
         self._insert_review(
             sf_cursor, rid, fname, "CORRECTED",
             f"{TAG_EDGE}precision_24",
@@ -833,8 +831,12 @@ class TestUserWorkflowEdgeCases:
             f"Epoch date roundtrip failed: got '{row[4]}'"
         )
 
-    def test_27_invalid_date_in_variant_breaks_view(self, sf_cursor, edge_targets):
-        """Invalid date string in VARIANT — INSERT succeeds, VIEW cast fails."""
+    def test_27_invalid_date_in_variant_falls_through(self, sf_cursor, edge_targets):
+        """Invalid date string in VARIANT — TRY_TO_DATE returns NULL, falls through.
+
+        The view uses TRY_TO_DATE which returns NULL for unparseable strings,
+        so COALESCE falls through to the original extraction value.
+        """
         t = edge_targets[2]
         rid, fname = t["RECORD_ID"], t["FILE_NAME"]
 
@@ -845,15 +847,13 @@ class TestUserWorkflowEdgeCases:
             {"invoice_date": "not-a-date"},
         )
 
-        # VIEW should fail on ::DATE cast
-        with pytest.raises(Exception, match="(?i)failed to cast|date"):
-            self._view_row(sf_cursor, rid)
-
-        # Clean up so view works for subsequent tests
-        sf_cursor.execute(
-            f"DELETE FROM {FQ}.INVOICE_REVIEW "
-            f"WHERE record_id = %s AND reviewer_notes LIKE %s",
-            (rid, f"{TAG_EDGE}bad_date_27%"),
+        # The VIEW should NOT crash — TRY_TO_DATE returns NULL,
+        # COALESCE falls through to the original value
+        row = self._view_row(sf_cursor, rid)
+        assert row is not None, "View should not crash on invalid date"
+        # invoice_date is row[4]; should be the original extraction value
+        assert row[4] is not None, (
+            "Invalid date correction should fall through to original"
         )
 
     # ── 5. Rapid-fire / duplicate submissions ─────────────────────────────
@@ -1055,9 +1055,29 @@ class TestUserWorkflowEdgeCases:
             f"VARIANT should take priority over legacy: got '{row[1]}'"
         )
 
-    # ── 8. Cleanup ────────────────────────────────────────────────────────
+    # ── 8. Regression guards ────────────────────────────────────────────
 
-    def test_36_cleanup_edge_cases(self, sf_cursor, edge_targets):
+    def test_36_view_ddl_uses_try_to_functions(self, sf_cursor):
+        """Regression guard: V_DOCUMENT_SUMMARY DDL must use TRY_TO_* casts.
+
+        If someone recreates the view without TRY_TO_NUMBER / TRY_TO_DATE,
+        overflow numbers and invalid dates in VARIANT corrections will crash
+        the view instead of falling through gracefully.
+        """
+        sf_cursor.execute(
+            f"SELECT GET_DDL('VIEW', '{FQ}.V_DOCUMENT_SUMMARY')"
+        )
+        ddl = sf_cursor.fetchone()[0].upper()
+        assert "TRY_TO_NUMBER" in ddl, (
+            "V_DOCUMENT_SUMMARY must use TRY_TO_NUMBER for safe VARIANT casts"
+        )
+        assert "TRY_TO_DATE" in ddl, (
+            "V_DOCUMENT_SUMMARY must use TRY_TO_DATE for safe VARIANT casts"
+        )
+
+    # ── 9. Cleanup ────────────────────────────────────────────────────────
+
+    def test_37_cleanup_edge_cases(self, sf_cursor, edge_targets):
         """Delete all edge-case test rows and verify originals restored."""
         sf_cursor.execute(
             f"DELETE FROM {FQ}.INVOICE_REVIEW "

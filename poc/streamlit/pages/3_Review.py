@@ -297,9 +297,13 @@ if changed_rows:
             if isinstance(v, float) and pd.isna(v):
                 return None
             try:
-                return float(v)
+                f = float(v)
             except (ValueError, TypeError):
                 return None
+            # NUMBER(12,2) range: -9999999999.99 to 9999999999.99
+            if f > 9999999999.99 or f < -9999999999.99:
+                return None
+            return f
 
         def _safe_date(v):
             if v is None:
@@ -320,6 +324,37 @@ if changed_rows:
                 VIEW_TO_EXT[vc] = ext_name
         VIEW_TO_EXT["LINE_ITEM_COUNT"] = "line_item_count"
         VIEW_TO_EXT["COMPUTED_LINE_TOTAL"] = "computed_line_total"
+
+        # ── Pre-save validation ───────────────────────────────────────
+        validation_errors = []
+        for idx in changed_rows:
+            row = edited_df.iloc[idx]
+            ref = _norm(row.get("INVOICE_NUMBER")) or _norm(row.get("FILE_NAME"))
+            for vc, ext_name in VIEW_TO_EXT.items():
+                ftype = field_types.get(ext_name, "VARCHAR")
+                raw_val = row.get(vc)
+                if raw_val is None or (isinstance(raw_val, float) and pd.isna(raw_val)):
+                    continue
+                if ftype == "NUMBER":
+                    try:
+                        f = float(raw_val)
+                        if f > 9999999999.99 or f < -9999999999.99:
+                            validation_errors.append(
+                                f"**{ref}** — {vc.replace('_', ' ').title()}: "
+                                f"value {raw_val} exceeds NUMBER(12,2) range "
+                                f"(±9,999,999,999.99)"
+                            )
+                    except (ValueError, TypeError):
+                        validation_errors.append(
+                            f"**{ref}** — {vc.replace('_', ' ').title()}: "
+                            f"'{raw_val}' is not a valid number"
+                        )
+
+        if validation_errors:
+            st.error("**Validation failed — changes not saved:**")
+            for err in validation_errors:
+                st.markdown(f"- {err}")
+            st.stop()
 
         saved = 0
         saved_ids = []
