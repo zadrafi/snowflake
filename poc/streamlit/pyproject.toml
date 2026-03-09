@@ -3,6 +3,7 @@ name = "ai-extract-dashboard"
 version = "1.0.0"
 requires-python = ">=3.11"
 dependencies = [
+    "snowflake-snowpark-python",
     "streamlit>=1.35.0",
     "plotly",
     "pypdfium2",

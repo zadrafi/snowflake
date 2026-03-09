@@ -85,6 +85,16 @@ class TestStreamlitStage:
         rows = sf_cursor.fetchall()
         assert len(rows) >= 1, "environment.yml not found in stage"
 
+    def test_stage_has_pyproject_toml(self, sf_cursor):
+        sf_cursor.execute(f"LIST @{FQ}.STREAMLIT_STAGE/pyproject.toml")
+        rows = sf_cursor.fetchall()
+        assert len(rows) >= 1, (
+            "pyproject.toml not found in stage. "
+            "Container Runtime requires pyproject.toml for dependency installation. "
+            "Upload it: PUT file://streamlit/pyproject.toml @STREAMLIT_STAGE/ "
+            "AUTO_COMPRESS=FALSE OVERWRITE=TRUE;"
+        )
+
     @pytest.mark.parametrize("page", [
         "0_Dashboard.py",
         "1_Document_Viewer.py",
@@ -123,28 +133,97 @@ class TestComputePool:
 # 3. Streamlit app object
 # ---------------------------------------------------------------------------
 class TestStreamlitApp:
-    """Verify the Streamlit app was created correctly."""
+    """Verify the Streamlit app was created correctly and is runnable."""
+
+    @pytest.fixture(scope="class")
+    def streamlit_desc(self, sf_cursor):
+        """DESCRIBE STREAMLIT and return as a dict."""
+        sf_cursor.execute(
+            f"DESCRIBE STREAMLIT {FQ}.AI_EXTRACT_DASHBOARD"
+        )
+        rows = sf_cursor.fetchall()
+        if len(rows) == 0:
+            pytest.skip("AI_EXTRACT_DASHBOARD not deployed")
+        cols = [d[0].lower() for d in sf_cursor.description]
+        return dict(zip(cols, rows[0]))
 
     def test_streamlit_exists(self, sf_cursor):
         sf_cursor.execute("SHOW STREAMLITS LIKE 'AI_EXTRACT_DASHBOARD'")
         rows = sf_cursor.fetchall()
-        if len(rows) == 0:
-            pytest.skip("AI_EXTRACT_DASHBOARD Streamlit not deployed (requires ACCOUNTADMIN)")
-        assert len(rows) >= 1
+        assert len(rows) >= 1, (
+            "AI_EXTRACT_DASHBOARD Streamlit not found. "
+            "Run 07_deploy_streamlit.sql to create it."
+        )
 
-    def test_streamlit_uses_container_runtime(self, sf_cursor):
+    def test_live_version_active(self, streamlit_desc):
+        """App must have a live version — without this it shows an error page."""
+        live_uri = streamlit_desc.get("live_version_location_uri", "")
+        assert live_uri and live_uri.strip(), (
+            "Streamlit has no live version. The app will not load. "
+            "Run: ALTER STREAMLIT AI_EXTRACT_DASHBOARD ADD LIVE VERSION FROM LAST;"
+        )
+
+    def test_uses_from_not_root_location(self, streamlit_desc):
+        """Container runtime does not support ROOT_LOCATION — must use FROM."""
+        # FROM-based apps have a version source location; ROOT_LOCATION apps don't
+        source_uri = streamlit_desc.get(
+            "default_version_source_location_uri", ""
+        )
+        assert source_uri and "STREAMLIT_STAGE" in source_uri.upper(), (
+            "Streamlit was not created with FROM syntax. "
+            "ROOT_LOCATION is not supported for container runtimes. "
+            "Recreate with: CREATE OR REPLACE STREAMLIT ... FROM '@...STREAMLIT_STAGE'"
+        )
+
+    def test_container_runtime(self, streamlit_desc):
+        """Must use container runtime, not warehouse runtime."""
+        runtime = streamlit_desc.get("runtime_name", "")
+        assert "CONTAINER" in runtime.upper(), (
+            f"Expected container runtime, got '{runtime}'. "
+            "Set RUNTIME_NAME = 'SYSTEM$ST_CONTAINER_RUNTIME_PY3_11'"
+        )
+
+    def test_compute_pool_set(self, streamlit_desc):
+        """Container runtime requires a compute pool."""
+        pool = streamlit_desc.get("compute_pool", "")
+        assert pool and "AI_EXTRACT_POC_POOL" in pool.upper(), (
+            f"Compute pool not set or wrong: '{pool}'. "
+            "Container runtime requires COMPUTE_POOL = AI_EXTRACT_POC_POOL"
+        )
+
+    def test_eai_attached(self, streamlit_desc):
+        """PyPI EAI must be attached for pip install to work."""
+        eai = str(streamlit_desc.get("external_access_integrations", ""))
+        assert "PYPI_ACCESS_INTEGRATION" in eai.upper(), (
+            f"PYPI_ACCESS_INTEGRATION not attached to Streamlit app. "
+            "Container runtime cannot install packages without it. "
+            "Add: EXTERNAL_ACCESS_INTEGRATIONS = (PYPI_ACCESS_INTEGRATION)"
+        )
+
+    def test_main_file_correct(self, streamlit_desc):
+        main = streamlit_desc.get("main_file", "")
+        assert main == "streamlit_app.py", (
+            f"Main file is '{main}', expected 'streamlit_app.py'"
+        )
+
+    def test_query_warehouse_set(self, streamlit_desc):
+        wh = streamlit_desc.get("query_warehouse", "")
+        assert wh and "AI_EXTRACT" in wh.upper(), (
+            f"Query warehouse not set or wrong: '{wh}'. "
+            "Set QUERY_WAREHOUSE = AI_EXTRACT_WH"
+        )
+
+    def test_url_id_assigned(self, sf_cursor):
+        """App must have a URL ID for Snowsight access."""
         sf_cursor.execute("SHOW STREAMLITS LIKE 'AI_EXTRACT_DASHBOARD'")
         rows = sf_cursor.fetchall()
-        if len(rows) == 0:
-            pytest.skip("AI_EXTRACT_DASHBOARD Streamlit not deployed")
-        # Check runtime column if available
-        cols = [d[0] for d in sf_cursor.description]
+        assert len(rows) >= 1
+        cols = [d[0].lower() for d in sf_cursor.description]
         row_dict = dict(zip(cols, rows[0]))
-        # Runtime name may appear in various columns depending on SF version
-        row_str = str(row_dict)
-        # Container runtime implies compute_pool is set
-        if "compute_pool" in row_dict and row_dict["compute_pool"]:
-            assert "AI_EXTRACT_POC_POOL" in str(row_dict["compute_pool"]).upper()
+        url_id = row_dict.get("url_id", "")
+        assert url_id and len(url_id) > 0, (
+            "Streamlit has no url_id — app is not accessible in Snowsight"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +374,124 @@ class TestEnvironmentYml:
         with open(self.ENV_YML) as f:
             content = f.read()
         assert "streamlit" in content.lower(), "environment.yml missing streamlit"
+
+
+# ---------------------------------------------------------------------------
+# 8. pyproject.toml validation (required for Container Runtime)
+# ---------------------------------------------------------------------------
+class TestPyprojectToml:
+    """Container Runtime requires pyproject.toml for dependency installation."""
+
+    PYPROJECT = os.path.join(
+        os.path.dirname(__file__), "..", "streamlit", "pyproject.toml"
+    )
+
+    def test_pyproject_toml_exists(self):
+        assert os.path.exists(self.PYPROJECT), (
+            "pyproject.toml not found in streamlit/ directory. "
+            "Container Runtime requires pyproject.toml (not just environment.yml)."
+        )
+
+    def test_has_project_section(self):
+        with open(self.PYPROJECT) as f:
+            content = f.read()
+        assert "[project]" in content, (
+            "pyproject.toml missing [project] section"
+        )
+
+    def test_has_streamlit_dependency(self):
+        with open(self.PYPROJECT) as f:
+            content = f.read()
+        assert "streamlit" in content.lower(), (
+            "pyproject.toml missing streamlit dependency"
+        )
+
+    def test_has_python_version(self):
+        with open(self.PYPROJECT) as f:
+            content = f.read()
+        assert "requires-python" in content, (
+            "pyproject.toml missing requires-python. "
+            "Add: requires-python = \">=3.11\""
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. DDL linting — catch deployment-breaking syntax before it ships
+# ---------------------------------------------------------------------------
+class TestStreamlitDDLLinting:
+    """Lint 07_deploy_streamlit.sql for known-bad patterns."""
+
+    DDL_FILE = os.path.join(
+        os.path.dirname(__file__), "..", "sql", "07_deploy_streamlit.sql"
+    )
+
+    def test_ddl_file_exists(self):
+        assert os.path.exists(self.DDL_FILE), "07_deploy_streamlit.sql not found"
+
+    def test_no_root_location(self):
+        """ROOT_LOCATION is legacy and not supported for Container Runtime."""
+        with open(self.DDL_FILE) as f:
+            content = f.read()
+        # Only check uncommented lines
+        active_lines = [
+            line for line in content.splitlines()
+            if not line.strip().startswith("--")
+        ]
+        active_sql = "\n".join(active_lines)
+        assert "ROOT_LOCATION" not in active_sql, (
+            "07_deploy_streamlit.sql contains ROOT_LOCATION. "
+            "This is not supported for container runtimes and will cause "
+            "'ROOT_LOCATION stages are not supported for vNext applications'. "
+            "Replace with: FROM '@...STREAMLIT_STAGE'"
+        )
+
+    def test_has_from_clause(self):
+        """CREATE STREAMLIT must use FROM for versioned stage."""
+        with open(self.DDL_FILE) as f:
+            content = f.read()
+        assert "FROM '@" in content or "FROM  '@" in content, (
+            "07_deploy_streamlit.sql missing FROM clause in CREATE STREAMLIT. "
+            "Container runtime requires FROM '@stage_path' syntax."
+        )
+
+    def test_has_add_live_version(self):
+        """FROM-based apps require ADD LIVE VERSION to activate."""
+        with open(self.DDL_FILE) as f:
+            content = f.read()
+        assert "ADD LIVE VERSION" in content.upper(), (
+            "07_deploy_streamlit.sql missing ALTER STREAMLIT ... ADD LIVE VERSION FROM LAST. "
+            "Without this, the app is created but never activated — users see an error page."
+        )
+
+    def test_has_container_runtime(self):
+        with open(self.DDL_FILE) as f:
+            content = f.read()
+        assert "SYSTEM$ST_CONTAINER_RUNTIME" in content, (
+            "07_deploy_streamlit.sql missing RUNTIME_NAME for container runtime"
+        )
+
+    def test_has_compute_pool(self):
+        with open(self.DDL_FILE) as f:
+            content = f.read()
+        assert "COMPUTE_POOL" in content, (
+            "07_deploy_streamlit.sql missing COMPUTE_POOL (required for container runtime)"
+        )
+
+    def test_has_eai(self):
+        with open(self.DDL_FILE) as f:
+            content = f.read()
+        assert "PYPI_ACCESS_INTEGRATION" in content, (
+            "07_deploy_streamlit.sql missing EXTERNAL_ACCESS_INTEGRATIONS for PyPI"
+        )
+
+    def test_deploy_script_uploads_pyproject(self):
+        """deploy_poc.sh must upload pyproject.toml to stage."""
+        deploy_script = os.path.join(
+            os.path.dirname(__file__), "..", "deploy_poc.sh"
+        )
+        with open(deploy_script) as f:
+            content = f.read()
+        assert "pyproject.toml" in content, (
+            "deploy_poc.sh does not upload pyproject.toml to STREAMLIT_STAGE. "
+            "Container Runtime requires it for dependency installation."
+        )

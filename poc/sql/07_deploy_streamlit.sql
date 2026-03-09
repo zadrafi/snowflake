@@ -27,16 +27,18 @@ CREATE STAGE IF NOT EXISTS STREAMLIT_STAGE
 -- Upload the streamlit/ folder contents from this POC kit.
 --
 -- OPTION A: Snowflake CLI
---   snow stage copy streamlit/streamlit_app.py @STREAMLIT_STAGE/  --overwrite
---   snow stage copy streamlit/config.py       @STREAMLIT_STAGE/  --overwrite
---   snow stage copy streamlit/environment.yml @STREAMLIT_STAGE/  --overwrite
---   snow stage copy streamlit/pages/          @STREAMLIT_STAGE/pages/ --overwrite
+--   snow stage copy streamlit/streamlit_app.py  @STREAMLIT_STAGE/  --overwrite
+--   snow stage copy streamlit/config.py         @STREAMLIT_STAGE/  --overwrite
+--   snow stage copy streamlit/pyproject.toml    @STREAMLIT_STAGE/  --overwrite
+--   snow stage copy streamlit/environment.yml   @STREAMLIT_STAGE/  --overwrite
+--   snow stage copy streamlit/pages/            @STREAMLIT_STAGE/pages/ --overwrite
 --
 -- OPTION B: SnowSQL
---   PUT file://streamlit/streamlit_app.py @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
---   PUT file://streamlit/config.py        @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
---   PUT file://streamlit/environment.yml  @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
---   PUT file://streamlit/pages/*.py       @STREAMLIT_STAGE/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+--   PUT file://streamlit/streamlit_app.py  @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+--   PUT file://streamlit/config.py         @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+--   PUT file://streamlit/pyproject.toml    @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+--   PUT file://streamlit/environment.yml   @STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+--   PUT file://streamlit/pages/*.py        @STREAMLIT_STAGE/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
 --
 -- OPTION C: Snowsight UI
 --   Navigate to the STREAMLIT_STAGE and upload files via drag-and-drop.
@@ -87,7 +89,7 @@ USE SCHEMA DOCUMENTS;
 -- Step 5: Create the Streamlit app
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE STREAMLIT AI_EXTRACT_DASHBOARD
-    ROOT_LOCATION = '@AI_EXTRACT_POC.DOCUMENTS.STREAMLIT_STAGE'
+    FROM '@AI_EXTRACT_POC.DOCUMENTS.STREAMLIT_STAGE'
     MAIN_FILE = 'streamlit_app.py'
     QUERY_WAREHOUSE = AI_EXTRACT_WH
     COMPUTE_POOL = AI_EXTRACT_POC_POOL
@@ -95,6 +97,9 @@ CREATE OR REPLACE STREAMLIT AI_EXTRACT_DASHBOARD
     RUNTIME_NAME = 'SYSTEM$ST_CONTAINER_RUNTIME_PY3_11'
     TITLE = 'AI_EXTRACT Document Processing'
     COMMENT = 'Document extraction dashboard powered by Cortex AI_EXTRACT';
+
+-- Activate the app (required for FROM-based Streamlit objects)
+ALTER STREAMLIT AI_EXTRACT_DASHBOARD ADD LIVE VERSION FROM LAST;
 
 -- ---------------------------------------------------------------------------
 -- Step 6: Grant access (optional — for other users in your account)

@@ -206,6 +206,8 @@ snow sql $CONNECTION_FLAG -q "
         AUTO_COMPRESS = FALSE OVERWRITE = TRUE;
     PUT file://${SCRIPT_DIR}/streamlit/config.py @STREAMLIT_STAGE/
         AUTO_COMPRESS = FALSE OVERWRITE = TRUE;
+    PUT file://${SCRIPT_DIR}/streamlit/pyproject.toml @STREAMLIT_STAGE/
+        AUTO_COMPRESS = FALSE OVERWRITE = TRUE;
     PUT file://${SCRIPT_DIR}/streamlit/environment.yml @STREAMLIT_STAGE/
         AUTO_COMPRESS = FALSE OVERWRITE = TRUE;
     PUT file://${SCRIPT_DIR}/streamlit/pages/0_Dashboard.py @STREAMLIT_STAGE/pages/
@@ -291,7 +293,7 @@ for VIEW in V_DOCUMENT_SUMMARY V_INVOICE_SUMMARY; do
 done
 
 # Check Streamlit stage files
-for FILE in streamlit_app.py config.py environment.yml; do
+for FILE in streamlit_app.py config.py pyproject.toml environment.yml; do
     snow sql $CONNECTION_FLAG -q "LIST @${POC_DB}.${POC_SCHEMA}.STREAMLIT_STAGE/${FILE}" > /dev/null 2>&1
     if [ $? -eq 0 ]; then
         echo "   OK: Stage file $FILE uploaded"
