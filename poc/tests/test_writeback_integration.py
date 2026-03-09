@@ -28,12 +28,13 @@ class TestInvoiceReviewTable:
         cols = [row[0] for row in sf_cursor.fetchall()]
         expected = [
             "REVIEW_ID", "RECORD_ID", "FILE_NAME", "REVIEW_STATUS",
-            "CORRECTED_TOTAL", "REVIEWER_NOTES", "REVIEWED_BY", "REVIEWED_AT",
             "CORRECTED_VENDOR_NAME", "CORRECTED_INVOICE_NUMBER",
             "CORRECTED_PO_NUMBER", "CORRECTED_INVOICE_DATE",
             "CORRECTED_DUE_DATE", "CORRECTED_PAYMENT_TERMS",
             "CORRECTED_RECIPIENT", "CORRECTED_SUBTOTAL",
-            "CORRECTED_TAX_AMOUNT", "CORRECTIONS",
+            "CORRECTED_TAX_AMOUNT", "CORRECTED_TOTAL",
+            "REVIEWER_NOTES", "REVIEWED_BY", "REVIEWED_AT",
+            "CORRECTIONS",
         ]
         assert cols == expected, f"Column mismatch: expected {expected}, got {cols}"
 
@@ -114,13 +115,12 @@ class TestInvoiceReviewTable:
         )
         assert sf_cursor.fetchone()[0] == 0, "Test DELETE failed"
 
-    def test_corrected_total_at_position_5(self, sf_cursor):
-        """CORRECTED_TOTAL should be at ordinal position 5 (between REVIEW_STATUS and REVIEWER_NOTES).
+    def test_corrected_total_at_position_14(self, sf_cursor):
+        """CORRECTED_TOTAL should be at ordinal position 14.
 
-        The 9 new corrected_* columns were added via ALTER TABLE and appended
-        at the end, but the original CORRECTED_TOTAL was in the CREATE TABLE
-        DDL at position 5.  This test verifies the legacy column coexists
-        correctly with the 9 newer corrected_* columns.
+        The CREATE TABLE DDL in 08_writeback.sql defines all corrected_*
+        columns inline (positions 5-14), with CORRECTED_TOTAL at position 14
+        after CORRECTED_TAX_AMOUNT.
         """
         sf_cursor.execute(
             "SELECT COLUMN_NAME, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS "
@@ -129,8 +129,8 @@ class TestInvoiceReviewTable:
         )
         result = sf_cursor.fetchone()
         assert result is not None, "CORRECTED_TOTAL column not found"
-        assert result[1] == 5, (
-            f"CORRECTED_TOTAL should be at ordinal position 5, got {result[1]}"
+        assert result[1] == 14, (
+            f"CORRECTED_TOTAL should be at ordinal position 14, got {result[1]}"
         )
 
     def test_corrected_total_coexists_with_new_columns(self, sf_cursor):

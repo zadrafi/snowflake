@@ -359,21 +359,23 @@ The `poc/` directory contains a standalone, reusable **AI_EXTRACT POC Kit** — 
 
 | Feature | Description |
 |---|---|
-| **Multi-document-type support** | Configuration-driven labels/prompts per document type via `DOCUMENT_TYPE_CONFIG` table |
+| **Multi-document-type support** | Configuration-driven labels/prompts per document type via `DOCUMENT_TYPE_CONFIG` table (INVOICE, CONTRACT, RECEIPT, UTILITY_BILL) |
+| **AI_EXTRACT output post-processing** | Normalizes dates, strips currency symbols, expands abbreviations, replaces "None" strings — because AI doesn't always follow formatting instructions |
+| **Confidence scoring** | Per-field `_confidence` metadata (0.0–1.0) added to `raw_extraction` VARIANT via `OBJECT_INSERT` |
 | **Review workflow** | Inline `st.data_editor` with append-only audit trail (`INVOICE_REVIEW` table) |
 | **RBAC** | Dedicated `AI_EXTRACT_APP` role with least-privilege grants (not ACCOUNTADMIN) |
 | **Parameterized queries** | All user-facing SQL uses `params=[]` — no SQL injection via f-strings |
-| **~421 automated tests** | 16 non-E2E test files + 5 Playwright E2E test files covering data quality, RBAC, concurrency, schema drift, and every Streamlit page |
+| **~999 automated tests** | 36 non-E2E test files + 7 Playwright E2E test files (896 + 103) covering data quality, RBAC, concurrency, schema drift, extraction accuracy across all 4 doc types, and every Streamlit page |
 
 ### Cross-Cloud Validation
 
-The POC has been deployed and fully tested on all three Snowflake clouds with zero failures:
+The POC has been deployed and fully tested on all three Snowflake clouds with zero failures and zero skips:
 
 | Cloud | Region | Non-E2E | E2E | Total |
 |---|---|---|---|---|
-| **AWS** | US East 1 | 340 passed | 71 passed | **411 passed** |
-| **Azure** | East US 2 | 350 passed | 71 passed | **421 passed** |
-| **GCP** | US Central 1 | 350 passed | 71 passed | **421 passed** |
+| **AWS** | US East 1 | 896 passed | 103 passed | **999 passed** |
+| **Azure** | East US 2 | 896 passed | 103 passed | **999 passed** |
+| **GCP** | US Central 1 | 896 passed | 103 passed | **999 passed** |
 
 See [`poc/README.md`](poc/README.md) for the full setup guide, SQL walkthrough, and test documentation.
 

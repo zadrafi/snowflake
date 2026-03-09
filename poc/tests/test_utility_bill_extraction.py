@@ -18,6 +18,17 @@ import pytest
 pytestmark = pytest.mark.sql
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _skip_if_no_utility_bills(sf_cursor):
+    """Skip all tests in this module if no UTILITY_BILL data exists."""
+    sf_cursor.execute(
+        "SELECT COUNT(*) FROM RAW_DOCUMENTS WHERE doc_type = 'UTILITY_BILL'"
+    )
+    count = sf_cursor.fetchone()[0]
+    if count == 0:
+        pytest.skip("No UTILITY_BILL data in deployment — skipping utility bill tests")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

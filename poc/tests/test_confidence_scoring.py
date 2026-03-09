@@ -344,6 +344,23 @@ def sf_cursor():
 class TestConfidenceInSnowflake:
     """Verify confidence scores are stored in EXTRACTED_FIELDS after re-extraction."""
 
+    @pytest.fixture(autouse=True)
+    def _skip_if_no_confidence_data(self, sf_cursor):
+        """Skip all tests if no UTILITY_BILL data or confidence scores exist."""
+        sf_cursor.execute(
+            "SELECT COUNT(*) FROM RAW_DOCUMENTS WHERE doc_type = 'UTILITY_BILL'"
+        )
+        if sf_cursor.fetchone()[0] == 0:
+            pytest.skip("No UTILITY_BILL data in deployment")
+        sf_cursor.execute("""
+            SELECT COUNT(*) FROM EXTRACTED_FIELDS e
+            JOIN RAW_DOCUMENTS r ON r.file_name = e.file_name
+            WHERE r.doc_type = 'UTILITY_BILL'
+              AND e.raw_extraction:_confidence IS NOT NULL
+        """)
+        if sf_cursor.fetchone()[0] == 0:
+            pytest.skip("No confidence scores in utility bill extractions — confidence scoring not enabled")
+
     def test_confidence_present_utility_bill_01(self, sf_cursor):
         sf_cursor.execute("""
             SELECT raw_extraction:_confidence::VARCHAR

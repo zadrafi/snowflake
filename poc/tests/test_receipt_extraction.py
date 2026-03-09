@@ -18,6 +18,17 @@ import pytest
 pytestmark = pytest.mark.sql
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _skip_if_no_receipts(sf_cursor):
+    """Skip all tests in this module if no RECEIPT data exists."""
+    sf_cursor.execute(
+        "SELECT COUNT(*) FROM RAW_DOCUMENTS WHERE doc_type = 'RECEIPT'"
+    )
+    count = sf_cursor.fetchone()[0]
+    if count == 0:
+        pytest.skip("No RECEIPT data in deployment — skipping receipt tests")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

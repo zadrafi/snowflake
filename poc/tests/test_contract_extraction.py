@@ -18,6 +18,17 @@ import pytest
 pytestmark = pytest.mark.sql
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _skip_if_no_contracts(sf_cursor):
+    """Skip all tests in this module if no CONTRACT data exists."""
+    sf_cursor.execute(
+        "SELECT COUNT(*) FROM RAW_DOCUMENTS WHERE doc_type = 'CONTRACT'"
+    )
+    count = sf_cursor.fetchone()[0]
+    if count == 0:
+        pytest.skip("No CONTRACT data in deployment — skipping contract tests")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -41,9 +41,9 @@ class TestDocTypeConfigSchema:
         cols = [r[0] for r in sf_cursor.fetchall()]
         expected = [
             "DOC_TYPE", "DISPLAY_NAME", "EXTRACTION_PROMPT",
-            "FIELD_LABELS", "CREATED_AT", "UPDATED_AT",
-            "TABLE_EXTRACTION_SCHEMA", "REVIEW_FIELDS", "ACTIVE",
-            "VALIDATION_RULES",
+            "FIELD_LABELS", "TABLE_EXTRACTION_SCHEMA",
+            "REVIEW_FIELDS", "VALIDATION_RULES", "ACTIVE",
+            "CREATED_AT", "UPDATED_AT",
         ]
         assert cols == expected, f"Column mismatch: {cols}"
 

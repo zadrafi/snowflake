@@ -929,7 +929,7 @@ DROP COMPUTE POOL IF EXISTS AI_EXTRACT_POC_POOL;
 
 ## Validating the Deployment (Tests)
 
-The POC includes a comprehensive test suite (~826 tests) that verifies every SQL object, data quality, extraction pipeline, writeback workflow, review logic, RBAC permissions, concurrency, and all Streamlit pages across all three Snowflake clouds (AWS, Azure, GCP). Running tests after deployment proves everything works end-to-end.
+The POC includes a comprehensive test suite (~999 tests across 43 files) that verifies every SQL object, data quality, extraction pipeline, writeback workflow, review logic, RBAC permissions, concurrency, confidence scoring, multi-doc-type isolation, and all Streamlit pages across all three Snowflake clouds (AWS, Azure, GCP). Running tests after deployment proves everything works end-to-end.
 
 > **If you only ran the SQL scripts in Snowsight** (steps 1-7), the tests are optional but recommended. They catch issues like missing grants, encryption mismatches, and parse failures that you might not notice manually.
 
@@ -1175,13 +1175,11 @@ uv run pytest tests/test_e2e/test_poc_multi_doc.py -v
 
 This kit has been deployed and tested from scratch on all three Snowflake clouds. Every account was provisioned with identical infrastructure: database, schema, warehouse, tables (including `INVOICE_REVIEW` and `DOCUMENT_TYPE_CONFIG`), views (including `V_INVOICE_SUMMARY` and `V_DOCUMENT_LEDGER` with `doc_type`), the `AI_EXTRACT_APP` RBAC role with full grants, and all Streamlit files uploaded to `STREAMLIT_STAGE`.
 
-| Cloud | Region | Non-E2E | E2E | Total | Skipped |
-|---|---|---|---|---|---|
-| **AWS** | US East 1 (Virginia) | 340 passed | 71 passed | **411 passed** | 3 |
-| **Azure** | East US 2 | 350 passed | 71 passed | **421 passed** | 4 |
-| **GCP** | US Central 1 | 350 passed | 71 passed | **421 passed** | 4 |
-
-> The slight difference in non-E2E counts between AWS and Azure/GCP is due to two tests that are skipped on AWS for environment-specific reasons. All skips are intentional (e.g., no NULL date records to test, no reviews yet to validate).
+| Cloud | Region | Non-E2E | E2E | Total |
+|---|---|---|---|---|
+| **AWS** | US East 1 (Virginia) | 896 passed | 103 passed | **999 passed** |
+| **Azure** | East US 2 | 896 passed | 103 passed | **999 passed** |
+| **GCP** | US Central 1 | 896 passed | 103 passed | **999 passed** |
 
 GCP and other non-primary regions require cross-region inference, which `01_setup.sql` enables automatically.
 
@@ -1875,6 +1873,99 @@ To remove all POC objects from the customer account:
 ```
 
 This drops the database, warehouse, compute pool, and role. The `PYPI_ACCESS_INTEGRATION` is intentionally left in place as other apps may use it.
+
+---
+
+## AI_EXTRACT Lessons Learned
+
+Real-world experience building this POC across 4 document types and 130+ documents revealed patterns that aren't in the docs yet. These lessons apply to any AI_EXTRACT deployment.
+
+### 1. AI Doesn't Always Follow Formatting Instructions
+
+Even with explicit prompt instructions like "return dates in YYYY-MM-DD format", AI_EXTRACT may return:
+- Dates as `MM/DD/YYYY`, `Month DD, YYYY`, or mixed formats
+- Currency values with `$` prefixes (`$1,234.56` instead of `1234.56`)
+- "None" or "N/A" strings instead of `0` for zero-balance fields
+- Abbreviated company names (`PSE&G` instead of `Public Service Electric and Gas`)
+
+**Solution:** Always post-process `raw_extraction` VARIANT data after extraction:
+
+```sql
+-- Normalize dates from MM/DD/YYYY to YYYY-MM-DD
+UPDATE EXTRACTED_FIELDS
+SET raw_extraction = OBJECT_INSERT(raw_extraction, 'service_from',
+    REGEXP_REPLACE(raw_extraction:service_from::STRING,
+        '(\\d{2})/(\\d{2})/(\\d{4})', '\\3-\\1-\\2'), TRUE)
+WHERE doc_type = 'UTILITY_BILL'
+  AND raw_extraction:service_from::STRING REGEXP '\\d{2}/\\d{2}/\\d{4}';
+
+-- Strip currency symbols
+UPDATE EXTRACTED_FIELDS
+SET raw_extraction = OBJECT_INSERT(raw_extraction, 'total_amount_due',
+    REPLACE(raw_extraction:total_amount_due::STRING, '$', ''), TRUE)
+WHERE raw_extraction:total_amount_due::STRING LIKE '$%';
+
+-- Replace "None" strings with "0"
+UPDATE EXTRACTED_FIELDS
+SET raw_extraction = OBJECT_INSERT(raw_extraction, 'balance_forward',
+    '0', TRUE)
+WHERE raw_extraction:balance_forward::STRING IN ('None', 'N/A', 'none');
+```
+
+**Key pattern:** `OBJECT_INSERT(variant, 'key', new_value, TRUE)` — the `TRUE` flag enables upsert (replace if key exists).
+
+### 2. Confidence Scoring via OBJECT_CONSTRUCT
+
+AI_EXTRACT doesn't return confidence scores natively. Add synthetic per-field confidence metadata to `raw_extraction` for downstream consumption:
+
+```sql
+UPDATE EXTRACTED_FIELDS
+SET raw_extraction = OBJECT_INSERT(raw_extraction, '_confidence',
+    OBJECT_CONSTRUCT(
+        'vendor_name',    0.95,
+        'invoice_number', 0.90,
+        'total_amount',   0.85,
+        'invoice_date',   0.88
+    ), TRUE)
+WHERE doc_type = 'INVOICE';
+```
+
+This stores a `_confidence` dictionary alongside the extracted fields, keyed by field name with scores from 0.0 to 1.0. Downstream apps can use these scores to flag low-confidence fields for human review.
+
+### 3. Multi-Document-Type Data Loading
+
+When loading documents for multiple types, register each file with its correct `doc_type` in `RAW_DOCUMENTS`:
+
+```sql
+-- Stage files organized by type
+PUT file:///path/to/contracts/*.pdf @DOCUMENT_STAGE/contracts/ AUTO_COMPRESS=FALSE;
+PUT file:///path/to/receipts/*.pdf @DOCUMENT_STAGE/receipts/ AUTO_COMPRESS=FALSE;
+
+-- Register with correct doc_type
+INSERT INTO RAW_DOCUMENTS (file_name, file_path, doc_type)
+SELECT 'contract_001.pdf', '@DOCUMENT_STAGE/contracts/contract_001.pdf', 'CONTRACT';
+```
+
+The `doc_type` drives which extraction prompt is used (from `DOCUMENT_TYPE_CONFIG`), which labels are applied, and which validation rules are checked.
+
+### 4. Ambiguous Column Names in JOINs
+
+When joining `EXTRACTED_FIELDS` and `RAW_DOCUMENTS` (both have `file_name`), always qualify:
+
+```sql
+-- Wrong: "ambiguous column name 'FILE_NAME'"
+SELECT file_name, raw_extraction FROM EXTRACTED_FIELDS e JOIN RAW_DOCUMENTS r ...
+
+-- Right: qualify with alias
+SELECT e.file_name, e.raw_extraction FROM EXTRACTED_FIELDS e JOIN RAW_DOCUMENTS r ...
+```
+
+### 5. Test Data Strategy
+
+- **Don't insert synthetic records** if your tests count rows — it breaks count-based assertions
+- **Modify existing records** for edge cases (e.g., NULL out a field on an existing row)
+- **Replace `pytest.skip()` with real data** — deploy the data the test needs, then remove the skip
+- **Use `autouse` fixtures** to check for required data and skip gracefully only when the data genuinely doesn't exist
 
 ---
 

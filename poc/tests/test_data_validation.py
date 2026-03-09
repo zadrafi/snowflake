@@ -349,10 +349,15 @@ class TestEdgeCases:
         )
 
     def test_no_negative_amounts(self, sf_cursor):
-        """Amounts should not be negative — indicates parse error with minus signs."""
+        """Amounts should not be negative — indicates parse error with minus signs.
+
+        Exception: CONTRACT field_9 (Adjustments) can legitimately be negative.
+        """
         sf_cursor.execute(
-            "SELECT COUNT(*) FROM EXTRACTED_FIELDS "
-            "WHERE field_8 < 0 OR field_9 < 0 OR field_10 < 0"
+            "SELECT COUNT(*) FROM EXTRACTED_FIELDS e "
+            "JOIN RAW_DOCUMENTS r ON r.file_name = e.file_name "
+            "WHERE (e.field_8 < 0 OR e.field_10 < 0) "
+            "   OR (e.field_9 < 0 AND r.doc_type != 'CONTRACT')"
         )
         negatives = sf_cursor.fetchone()[0]
         assert negatives == 0, (

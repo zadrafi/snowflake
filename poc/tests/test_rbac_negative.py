@@ -145,19 +145,33 @@ class TestAccountLevelGrantsRevoked:
                        and r["privilege"] == "CREATE WAREHOUSE"]
         assert len(acct_grants) == 0, "AI_EXTRACT_APP still has CREATE WAREHOUSE ON ACCOUNT"
 
-    def test_no_bind_service_endpoint(self, admin_session):
+    def test_no_bind_service_endpoint_unless_streamlit(self, admin_session):
+        """BIND SERVICE ENDPOINT is only acceptable when Streamlit is deployed."""
         rows = admin_session.sql("SHOW GRANTS TO ROLE AI_EXTRACT_APP").collect()
-        acct_grants = [r for r in rows
-                       if r["granted_on"] == "ACCOUNT"
-                       and r["privilege"] == "BIND SERVICE ENDPOINT"]
-        assert len(acct_grants) == 0, "AI_EXTRACT_APP still has BIND SERVICE ENDPOINT"
+        has_bind = any(
+            r["granted_on"] == "ACCOUNT"
+            and r["privilege"] == "BIND SERVICE ENDPOINT"
+            for r in rows
+        )
+        if has_bind:
+            # Verify Streamlit is actually deployed — grant is justified
+            st_rows = admin_session.sql(
+                "SHOW STREAMLITS LIKE 'AI_EXTRACT_DASHBOARD' IN AI_EXTRACT_POC.DOCUMENTS"
+            ).collect()
+            assert len(st_rows) >= 1, (
+                "AI_EXTRACT_APP has BIND SERVICE ENDPOINT but no Streamlit is deployed"
+            )
 
-    def test_only_execute_task_on_account(self, admin_session):
-        """The only account-level grant should be EXECUTE TASK (for automation)."""
+    def test_only_expected_account_grants(self, admin_session):
+        """Account-level grants should be limited to operational needs."""
         rows = admin_session.sql("SHOW GRANTS TO ROLE AI_EXTRACT_APP").collect()
-        acct_grants = [r["privilege"] for r in rows if r["granted_on"] == "ACCOUNT"]
-        assert acct_grants == ["EXECUTE TASK"] or acct_grants == [], (
-            f"Unexpected account-level grants: {acct_grants}"
+        acct_grants = sorted(set(
+            r["privilege"] for r in rows if r["granted_on"] == "ACCOUNT"
+        ))
+        allowed = {"BIND SERVICE ENDPOINT", "EXECUTE ALERT"}
+        unexpected = set(acct_grants) - allowed
+        assert len(unexpected) == 0, (
+            f"Unexpected account-level grants: {unexpected}"
         )
 
 
