@@ -400,7 +400,7 @@ with st.form("add_doc_type", clear_on_submit=True):
                     INSERT INTO {DB}.DOCUMENT_TYPE_CONFIG (
                         doc_type, display_name, extraction_prompt,
                         field_labels, table_extraction_schema, review_fields
-                    ) VALUES (?, ?, ?, PARSE_JSON(?), PARSE_JSON(?), PARSE_JSON(?))
+                    ) SELECT ?, ?, ?, PARSE_JSON(?), PARSE_JSON(?), PARSE_JSON(?)
                     """,
                     params=[
                         doc_type_clean,

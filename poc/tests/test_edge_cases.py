@@ -94,7 +94,7 @@ class TestAutoincrementGaps:
             f"SELECT review_status, corrected_vendor_name "
             f"FROM {FQ}.INVOICE_REVIEW "
             f"WHERE record_id = %s "
-            f"ORDER BY review_id DESC LIMIT 1",
+            f"ORDER BY reviewed_at DESC LIMIT 1",
             (rid,),
         )
         expected = sf_cursor.fetchone()

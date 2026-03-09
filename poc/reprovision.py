@@ -587,7 +587,7 @@ def main():
         ) li ON ef.file_name = li.file_name
         LEFT JOIN (
             SELECT * FROM INVOICE_REVIEW
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY review_id DESC) = 1
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY reviewed_at DESC) = 1
         ) rv ON ef.record_id = rv.record_id""",
         "Create V_DOCUMENT_SUMMARY")
 

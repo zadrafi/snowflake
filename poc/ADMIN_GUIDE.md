@@ -524,7 +524,7 @@ WHERE record_id NOT IN (SELECT record_id FROM EXTRACTED_FIELDS);
 
 `INVOICE_REVIEW` is append-only — corrections are never overwritten. The view
 `V_INVOICE_SUMMARY` always shows the latest review per record via
-`ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY review_id DESC)`.
+`ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY reviewed_at DESC)`.
 
 ---
 

@@ -84,7 +84,7 @@ class TestInterleavedReviews:
             f"SELECT review_status, corrected_vendor_name "
             f"FROM {FQ}.INVOICE_REVIEW "
             f"WHERE reviewer_notes IN (%s, %s) "
-            f"ORDER BY review_id DESC LIMIT 1",
+            f"ORDER BY reviewed_at DESC LIMIT 1",
             (f"{TAG}_a", f"{TAG}_b"),
         )
         expected = sf_cursor.fetchone()
@@ -240,7 +240,7 @@ class TestRapidOverwrite:
             f"SELECT review_status, corrected_vendor_name "
             f"FROM {FQ}.INVOICE_REVIEW "
             f"WHERE reviewer_notes LIKE '{TAG}_rapid_%' "
-            f"ORDER BY review_id DESC LIMIT 1"
+            f"ORDER BY reviewed_at DESC LIMIT 1"
         )
         latest = sf_cursor.fetchone()
         expected_status, expected_vendor = latest[0], latest[1]

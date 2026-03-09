@@ -303,7 +303,7 @@ class TestAppendOnlyAuditTrail:
         sf_cursor.execute(
             "SELECT review_status, corrected_total FROM INVOICE_REVIEW "
             "WHERE reviewer_notes IN ('__pytest_audit_1__', '__pytest_audit_2__') "
-            "ORDER BY review_id DESC LIMIT 1"
+            "ORDER BY reviewed_at DESC LIMIT 1"
         )
         latest = sf_cursor.fetchone()
         expected_status = latest[0]
@@ -361,12 +361,12 @@ class TestAppendOnlyAuditTrail:
                 (record_id, file_name, status, vendor, f"__pytest_3audit_{i}__"),
             )
 
-        # The view uses ROW_NUMBER() ORDER BY review_id DESC, so highest review_id wins.
-        # Verify by checking which review_id is the max among our test rows.
+        # The view uses ROW_NUMBER() ORDER BY reviewed_at DESC, so most recent wins.
+        # Verify by checking which reviewed_at is the max among our test rows.
         sf_cursor.execute(
             "SELECT review_status, corrected_vendor_name FROM INVOICE_REVIEW "
             "WHERE reviewer_notes LIKE '__pytest_3audit_%' "
-            "ORDER BY review_id DESC LIMIT 1"
+            "ORDER BY reviewed_at DESC LIMIT 1"
         )
         latest_row = sf_cursor.fetchone()
         expected_status = latest_row[0]
@@ -646,7 +646,7 @@ class TestBatchReviewInserts:
         sf_cursor.execute(
             "SELECT review_status, corrected_vendor_name FROM INVOICE_REVIEW "
             "WHERE reviewer_notes LIKE '__pytest_batch_same_%' "
-            "ORDER BY review_id DESC LIMIT 1"
+            "ORDER BY reviewed_at DESC LIMIT 1"
         )
         latest = sf_cursor.fetchone()
 

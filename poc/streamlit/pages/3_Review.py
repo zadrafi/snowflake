@@ -355,11 +355,10 @@ if changed_rows:
                     corrected_recipient, corrected_subtotal,
                     corrected_tax_amount, corrected_total,
                     reviewer_notes, corrections
-                ) VALUES (
+                ) SELECT
                     ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, PARSE_JSON(?)
-                )
                 """,
                 params=[
                     record_id,

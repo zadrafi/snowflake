@@ -264,6 +264,8 @@ class TestRequiredSQLObjects:
     REQUIRED_VIEWS = [
         "V_DOCUMENT_SUMMARY",
         "V_INVOICE_SUMMARY",
+        "V_DOCUMENT_LEDGER",
+        "V_EXTRACTION_STATUS",
     ]
 
     REQUIRED_STAGES = [
@@ -414,6 +416,23 @@ class TestPyprojectToml:
             "Add: requires-python = \">=3.11\""
         )
 
+    def test_has_snowpark_dependency(self):
+        """pyproject.toml must pin snowflake-snowpark-python.
+
+        When pyproject.toml exists on stage, Container Runtime uses it
+        instead of the built-in default packages.  Without an explicit
+        snowflake-snowpark-python entry the runtime pulls the latest
+        version from PyPI, which may have stricter SQL validation
+        (e.g. rejecting PARSE_JSON(?) inside VALUES clauses).
+        """
+        with open(self.PYPROJECT) as f:
+            content = f.read().lower()
+        assert "snowflake-snowpark-python" in content, (
+            "pyproject.toml missing snowflake-snowpark-python dependency. "
+            "Container Runtime overrides built-in packages when pyproject.toml "
+            "is present — omitting Snowpark causes import failures."
+        )
+
 
 # ---------------------------------------------------------------------------
 # 9. DDL linting — catch deployment-breaking syntax before it ships
@@ -494,4 +513,403 @@ class TestStreamlitDDLLinting:
         assert "pyproject.toml" in content, (
             "deploy_poc.sh does not upload pyproject.toml to STREAMLIT_STAGE. "
             "Container Runtime requires it for dependency installation."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10. View ordering integrity — NOORDER autoincrement regression prevention
+# ---------------------------------------------------------------------------
+class TestViewOrderingIntegrity:
+    """Verify V_DOCUMENT_SUMMARY uses reviewed_at (not review_id) for ordering.
+
+    INVOICE_REVIEW uses AUTOINCREMENT NOORDER, which does NOT guarantee
+    monotonically increasing IDs. The view must sort by reviewed_at DESC
+    to reliably pick the latest review row.
+    """
+
+    WRITEBACK_DDL = os.path.join(
+        os.path.dirname(__file__), "..", "sql", "08_writeback.sql"
+    )
+
+    def test_live_view_uses_reviewed_at(self, sf_cursor):
+        """The deployed V_DOCUMENT_SUMMARY must ORDER BY reviewed_at DESC."""
+        sf_cursor.execute(
+            f"SELECT GET_DDL('VIEW', '{FQ}.V_DOCUMENT_SUMMARY') AS ddl"
+        )
+        ddl = sf_cursor.fetchone()[0].upper()
+        assert "ORDER BY REVIEWED_AT DESC" in ddl, (
+            "V_DOCUMENT_SUMMARY sorts by review_id instead of reviewed_at. "
+            "NOORDER autoincrement means review_id is NOT monotonic — "
+            "status updates will appear to not persist."
+        )
+
+    def test_live_view_does_not_use_review_id_order(self, sf_cursor):
+        """Ensure review_id DESC is not used for ordering in the view."""
+        sf_cursor.execute(
+            f"SELECT GET_DDL('VIEW', '{FQ}.V_DOCUMENT_SUMMARY') AS ddl"
+        )
+        ddl = sf_cursor.fetchone()[0].upper()
+        assert "ORDER BY REVIEW_ID DESC" not in ddl, (
+            "V_DOCUMENT_SUMMARY still uses ORDER BY review_id DESC. "
+            "This is unreliable with NOORDER autoincrement. "
+            "Change to ORDER BY reviewed_at DESC."
+        )
+
+    def test_writeback_ddl_uses_reviewed_at(self):
+        """08_writeback.sql must use reviewed_at for QUALIFY ordering."""
+        with open(self.WRITEBACK_DDL) as f:
+            content = f.read()
+        assert "order by reviewed_at desc" in content.lower().replace("  ", " "), (
+            "08_writeback.sql QUALIFY clause uses review_id instead of reviewed_at"
+        )
+
+    def test_writeback_ddl_no_review_id_order(self):
+        """08_writeback.sql must NOT have ORDER BY review_id DESC in QUALIFY."""
+        with open(self.WRITEBACK_DDL) as f:
+            content = f.read()
+        # Only check non-comment lines
+        active_lines = [
+            line for line in content.splitlines()
+            if not line.strip().startswith("--")
+        ]
+        active_sql = "\n".join(active_lines).lower()
+        assert "order by review_id desc" not in active_sql, (
+            "08_writeback.sql still has ORDER BY review_id DESC in active SQL. "
+            "NOORDER autoincrement makes this unreliable."
+        )
+
+    def test_review_status_persists_after_update(self, sf_cursor):
+        """Insert two reviews for the same record; view must show the later one."""
+        # Find a valid record_id to test with
+        sf_cursor.execute(
+            f"SELECT record_id, file_name FROM {FQ}.EXTRACTED_FIELDS LIMIT 1"
+        )
+        row = sf_cursor.fetchone()
+        if not row:
+            pytest.skip("No extracted records to test with")
+        rid, fname = row[0], row[1]
+
+        tag = "__pytest_noorder_check__"
+
+        # Insert CORRECTED first
+        sf_cursor.execute(
+            f"INSERT INTO {FQ}.INVOICE_REVIEW "
+            f"(record_id, file_name, review_status, reviewer_notes) "
+            f"VALUES (%s, %s, 'CORRECTED', %s)",
+            (rid, fname, f"{tag}_1"),
+        )
+
+        # Brief pause so reviewed_at is strictly later
+        sf_cursor.execute("SELECT SYSTEM$WAIT(1)")
+
+        # Insert APPROVED second — this should be the winner
+        sf_cursor.execute(
+            f"INSERT INTO {FQ}.INVOICE_REVIEW "
+            f"(record_id, file_name, review_status, reviewer_notes) "
+            f"VALUES (%s, %s, 'APPROVED', %s)",
+            (rid, fname, f"{tag}_2"),
+        )
+
+        # View must show APPROVED (the most recent by reviewed_at)
+        sf_cursor.execute(
+            f"SELECT review_status FROM {FQ}.V_DOCUMENT_SUMMARY "
+            f"WHERE record_id = %s",
+            (rid,),
+        )
+        view_row = sf_cursor.fetchone()
+        assert view_row is not None, "Record not found in V_DOCUMENT_SUMMARY"
+        assert view_row[0] == "APPROVED", (
+            f"View shows '{view_row[0]}' instead of 'APPROVED'. "
+            "The view is not picking the latest review by reviewed_at."
+        )
+
+        # Cleanup test rows
+        sf_cursor.execute(
+            f"DELETE FROM {FQ}.INVOICE_REVIEW "
+            f"WHERE reviewer_notes LIKE '{tag}%'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 11. Streamlit page SQL validation — every page's queries run without error
+# ---------------------------------------------------------------------------
+class TestStreamlitPageSQL:
+    """Run the core SQL query from every Streamlit page against live objects.
+
+    Not a full UI test, but validates that every SQL statement compiles and
+    executes against the current schema. Catches missing views, wrong column
+    names, and broken joins before users ever hit the page.
+    """
+
+    def test_home_extraction_status(self, sf_cursor):
+        """streamlit_app.py: V_EXTRACTION_STATUS query."""
+        sf_cursor.execute(f"SELECT * FROM {FQ}.V_EXTRACTION_STATUS")
+        assert sf_cursor.fetchone() is not None
+
+    def test_home_extraction_summary(self, sf_cursor):
+        """streamlit_app.py: extraction summary counts."""
+        sf_cursor.execute(f"""
+            SELECT
+                (SELECT COUNT(*) FROM {FQ}.EXTRACTED_FIELDS) AS documents,
+                (SELECT COUNT(*) FROM {FQ}.EXTRACTED_TABLE_DATA) AS line_items,
+                (SELECT COUNT(DISTINCT field_1) FROM {FQ}.EXTRACTED_FIELDS
+                 WHERE field_1 IS NOT NULL) AS unique_senders
+        """)
+        row = sf_cursor.fetchone()
+        assert row is not None
+
+    def test_dashboard_kpi_query(self, sf_cursor):
+        """0_Dashboard.py: KPI aggregate query."""
+        sf_cursor.execute(f"""
+            SELECT
+                COUNT(*) AS total_documents,
+                SUM(ef.field_10) AS total_amount,
+                COUNT(DISTINCT ef.field_1) AS unique_senders,
+                COUNT(CASE WHEN ef.field_5 IS NOT NULL
+                            AND ef.field_5 < CURRENT_DATE() THEN 1 END) AS overdue_count
+            FROM {FQ}.EXTRACTED_FIELDS ef
+                JOIN {FQ}.RAW_DOCUMENTS rd ON ef.file_name = rd.file_name
+        """)
+        assert sf_cursor.fetchone() is not None
+
+    def test_dashboard_recent_documents(self, sf_cursor):
+        """0_Dashboard.py: recent documents query."""
+        sf_cursor.execute(f"""
+            SELECT
+                ef.field_2 AS document_number,
+                ef.field_1 AS sender,
+                ef.field_4 AS document_date,
+                ef.field_10 AS total_amount,
+                ef.status,
+                ef.extracted_at
+            FROM {FQ}.EXTRACTED_FIELDS ef
+                JOIN {FQ}.RAW_DOCUMENTS rd ON ef.file_name = rd.file_name
+            ORDER BY ef.extracted_at DESC NULLS LAST
+            LIMIT 15
+        """)
+        # May return 0 rows if no data, but should not error
+        sf_cursor.fetchall()
+
+    def test_viewer_sender_list(self, sf_cursor):
+        """1_Document_Viewer.py: distinct sender query."""
+        sf_cursor.execute(f"""
+            SELECT DISTINCT ef.field_1 AS sender
+            FROM {FQ}.EXTRACTED_FIELDS ef
+                JOIN {FQ}.RAW_DOCUMENTS rd ON ef.file_name = rd.file_name
+            WHERE ef.field_1 IS NOT NULL
+            ORDER BY sender
+        """)
+        sf_cursor.fetchall()
+
+    def test_viewer_document_ledger(self, sf_cursor):
+        """1_Document_Viewer.py: main document list query."""
+        sf_cursor.execute(f"""
+            SELECT
+                ef.record_id, ef.file_name,
+                ef.field_1 AS sender, ef.field_2 AS document_number,
+                ef.field_4 AS document_date, ef.field_10 AS total_amount,
+                ef.status
+            FROM {FQ}.EXTRACTED_FIELDS ef
+                JOIN {FQ}.RAW_DOCUMENTS rd ON ef.file_name = rd.file_name
+            ORDER BY ef.field_4 DESC NULLS LAST
+        """)
+        sf_cursor.fetchall()
+
+    def test_viewer_aging_buckets(self, sf_cursor):
+        """1_Document_Viewer.py / 2_Analytics.py: V_DOCUMENT_LEDGER aging query."""
+        sf_cursor.execute(f"""
+            SELECT
+                aging_bucket, COUNT(*) AS document_count,
+                SUM(total_amount) AS total_amount, sort_order
+            FROM (
+                SELECT total_amount,
+                    CASE
+                        WHEN due_date IS NULL THEN 'N/A'
+                        WHEN due_date >= CURRENT_DATE() THEN 'Current'
+                        WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 30 THEN '1-30 Days'
+                        ELSE '30+ Days'
+                    END AS aging_bucket,
+                    CASE
+                        WHEN due_date IS NULL THEN 99
+                        WHEN due_date >= CURRENT_DATE() THEN 0
+                        ELSE 1
+                    END AS sort_order
+                FROM {FQ}.V_DOCUMENT_LEDGER
+            ) sub
+            GROUP BY aging_bucket, sort_order
+            ORDER BY sort_order
+        """)
+        sf_cursor.fetchall()
+
+    def test_viewer_line_items(self, sf_cursor):
+        """1_Document_Viewer.py: line items query."""
+        sf_cursor.execute(f"""
+            SELECT line_number, col_1, col_2, col_3, col_4, col_5
+            FROM {FQ}.EXTRACTED_TABLE_DATA
+            ORDER BY line_number
+            LIMIT 10
+        """)
+        sf_cursor.fetchall()
+
+    def test_analytics_vendor_summary(self, sf_cursor):
+        """2_Analytics.py: vendor spend summary."""
+        sf_cursor.execute(f"""
+            SELECT
+                ef.field_1 AS vendor_name,
+                COUNT(*) AS document_count,
+                SUM(ef.field_10) AS total_amount
+            FROM {FQ}.EXTRACTED_FIELDS ef
+                JOIN {FQ}.RAW_DOCUMENTS rd ON ef.file_name = rd.file_name
+            WHERE ef.field_1 IS NOT NULL
+            GROUP BY ef.field_1
+            ORDER BY total_amount DESC
+            LIMIT 15
+        """)
+        sf_cursor.fetchall()
+
+    def test_analytics_monthly_trend(self, sf_cursor):
+        """2_Analytics.py: monthly trend query."""
+        sf_cursor.execute(f"""
+            SELECT
+                DATE_TRUNC('month', ef.field_4) AS month,
+                COUNT(*) AS document_count,
+                SUM(ef.field_10) AS total_amount
+            FROM {FQ}.EXTRACTED_FIELDS ef
+                JOIN {FQ}.RAW_DOCUMENTS rd ON ef.file_name = rd.file_name
+            WHERE ef.field_4 IS NOT NULL
+            GROUP BY DATE_TRUNC('month', ef.field_4)
+            ORDER BY month
+        """)
+        sf_cursor.fetchall()
+
+    def test_analytics_top_items(self, sf_cursor):
+        """2_Analytics.py: top line items query."""
+        sf_cursor.execute(f"""
+            SELECT
+                etd.col_1 AS item_description,
+                etd.col_2 AS category,
+                COUNT(*) AS appearance_count,
+                SUM(etd.col_5) AS total_spend
+            FROM {FQ}.EXTRACTED_TABLE_DATA etd
+                JOIN {FQ}.RAW_DOCUMENTS rd ON etd.file_name = rd.file_name
+            WHERE etd.col_1 IS NOT NULL
+            GROUP BY etd.col_1, etd.col_2
+            ORDER BY total_spend DESC
+            LIMIT 20
+        """)
+        sf_cursor.fetchall()
+
+    def test_review_document_summary(self, sf_cursor):
+        """3_Review.py: V_DOCUMENT_SUMMARY query."""
+        sf_cursor.execute(f"""
+            SELECT * FROM {FQ}.V_DOCUMENT_SUMMARY
+            ORDER BY record_id DESC
+            LIMIT 5
+        """)
+        sf_cursor.fetchall()
+
+    def test_review_vendor_filter(self, sf_cursor):
+        """3_Review.py: distinct vendor_name from V_DOCUMENT_SUMMARY."""
+        sf_cursor.execute(f"""
+            SELECT DISTINCT vendor_name
+            FROM {FQ}.V_DOCUMENT_SUMMARY
+            WHERE vendor_name IS NOT NULL
+            ORDER BY vendor_name
+        """)
+        sf_cursor.fetchall()
+
+    def test_admin_config_list(self, sf_cursor):
+        """4_Admin.py: DOCUMENT_TYPE_CONFIG listing."""
+        sf_cursor.execute(
+            f"SELECT * FROM {FQ}.DOCUMENT_TYPE_CONFIG ORDER BY doc_type"
+        )
+        rows = sf_cursor.fetchall()
+        assert len(rows) >= 1, (
+            "DOCUMENT_TYPE_CONFIG is empty — at least one doc type must be configured"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. Streamlit write SQL validation — no PARSE_JSON in VALUES, INSERT SELECT
+# ---------------------------------------------------------------------------
+class TestStreamlitWriteSQL:
+    """Validate that write SQL in Streamlit pages uses safe patterns.
+
+    PARSE_JSON(?) is not allowed inside VALUES clauses. All inserts with
+    function calls must use INSERT INTO ... SELECT instead.
+    """
+
+    STREAMLIT_DIR = os.path.join(os.path.dirname(__file__), "..", "streamlit")
+
+    def test_review_insert_uses_select(self):
+        """3_Review.py must use INSERT ... SELECT, not INSERT ... VALUES with functions."""
+        review_py = os.path.join(self.STREAMLIT_DIR, "pages", "3_Review.py")
+        with open(review_py) as f:
+            content = f.read()
+        # Find the INSERT INTO INVOICE_REVIEW block
+        assert "INSERT INTO" in content, "3_Review.py has no INSERT statement"
+        # Should use SELECT after the column list, not VALUES
+        # Look for the pattern: closing paren of column list followed by SELECT
+        assert ") SELECT" in content or ")SELECT" in content or ") SELECT" in content.replace("\n", " "), (
+            "3_Review.py INSERT INTO INVOICE_REVIEW uses VALUES instead of SELECT. "
+            "PARSE_JSON(?) is not allowed inside VALUES clauses."
+        )
+
+    def test_admin_insert_uses_select(self):
+        """4_Admin.py must use INSERT ... SELECT, not INSERT ... VALUES with functions."""
+        admin_py = os.path.join(self.STREAMLIT_DIR, "pages", "4_Admin.py")
+        with open(admin_py) as f:
+            content = f.read()
+        assert "INSERT INTO" in content, "4_Admin.py has no INSERT statement"
+        assert ") SELECT" in content or ")SELECT" in content or ") SELECT" in content.replace("\n", " "), (
+            "4_Admin.py INSERT INTO DOCUMENT_TYPE_CONFIG uses VALUES instead of SELECT. "
+            "PARSE_JSON(?) is not allowed inside VALUES clauses."
+        )
+
+    def test_no_parse_json_in_values(self):
+        """No Streamlit .py file should have PARSE_JSON inside a VALUES clause."""
+        import glob as globmod
+        pattern = os.path.join(self.STREAMLIT_DIR, "**", "*.py")
+        for filepath in globmod.glob(pattern, recursive=True):
+            with open(filepath) as f:
+                content = f.read()
+            # Normalize whitespace for matching
+            flat = " ".join(content.split())
+            assert "VALUES" not in flat or "PARSE_JSON" not in flat.split("VALUES")[-1].split(")")[0] if "VALUES" in flat else True, (
+                f"{os.path.basename(filepath)} has PARSE_JSON inside a VALUES clause. "
+                "Use INSERT ... SELECT instead of INSERT ... VALUES for function calls."
+            )
+
+    def test_review_insert_compiles_live(self, sf_cursor):
+        """INSERT INTO INVOICE_REVIEW ... SELECT ... PARSE_JSON(?) actually executes."""
+        # Find a valid record to test with
+        sf_cursor.execute(
+            f"SELECT record_id, file_name FROM {FQ}.EXTRACTED_FIELDS LIMIT 1"
+        )
+        row = sf_cursor.fetchone()
+        if not row:
+            pytest.skip("No extracted records to test with")
+        rid, fname = row[0], row[1]
+
+        tag = "__pytest_insert_compile__"
+        sf_cursor.execute(
+            f"INSERT INTO {FQ}.INVOICE_REVIEW ("
+            f"  record_id, file_name, review_status,"
+            f"  corrected_vendor_name, reviewer_notes, corrections"
+            f") SELECT %s, %s, 'CORRECTED', 'Test', %s, PARSE_JSON(%s)",
+            (rid, fname, tag, '{"test": true}'),
+        )
+
+        # Verify it was inserted
+        sf_cursor.execute(
+            f"SELECT COUNT(*) FROM {FQ}.INVOICE_REVIEW "
+            f"WHERE reviewer_notes = %s",
+            (tag,),
+        )
+        assert sf_cursor.fetchone()[0] == 1, "INSERT ... SELECT ... PARSE_JSON(?) failed"
+
+        # Cleanup
+        sf_cursor.execute(
+            f"DELETE FROM {FQ}.INVOICE_REVIEW WHERE reviewer_notes = %s",
+            (tag,),
         )

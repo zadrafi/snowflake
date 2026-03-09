@@ -106,12 +106,13 @@ LEFT JOIN (
 ) li
     ON ef.file_name = li.file_name
 
--- Latest review per document (highest review_id wins)
+-- Latest review per document (most recent reviewed_at wins — review_id uses
+-- NOORDER autoincrement so it is NOT guaranteed to be monotonic)
 LEFT JOIN (
     SELECT *
     FROM INVOICE_REVIEW
     QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY record_id ORDER BY review_id DESC
+        PARTITION BY record_id ORDER BY reviewed_at DESC
     ) = 1
 ) rv
     ON ef.record_id = rv.record_id;
