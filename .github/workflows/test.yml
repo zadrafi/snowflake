@@ -9,6 +9,12 @@ on:
     branches: [main]
     paths:
       - 'poc/**'
+  workflow_dispatch:
+    inputs:
+      clouds:
+        description: 'Clouds to test (comma-separated: aws,azure,gcp)'
+        required: false
+        default: 'aws,azure,gcp'
 
 env:
   PYTHON_VERSION: '3.11'
@@ -57,17 +63,28 @@ jobs:
           done
 
   # -----------------------------------------------------------------------
-  # SQL integration tests — requires Snowflake connection
+  # SQL integration tests — matrix across AWS, Azure, GCP
   # -----------------------------------------------------------------------
   sql-tests:
-    name: SQL Integration Tests
+    name: SQL Tests (${{ matrix.cloud }})
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: [aws, azure, gcp]
+        include:
+          - cloud: aws
+            account_secret: SNOWFLAKE_ACCOUNT_AWS
+          - cloud: azure
+            account_secret: SNOWFLAKE_ACCOUNT_AZURE
+          - cloud: gcp
+            account_secret: SNOWFLAKE_ACCOUNT_GCP
     defaults:
       run:
         working-directory: poc
     env:
-      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_ACCOUNT: ${{ secrets[matrix.account_secret] }}
       SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
       SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
       POC_CONNECTION: ci
@@ -79,7 +96,7 @@ jobs:
         run: |
           if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$SNOWFLAKE_USER" ] || [ -z "$SNOWFLAKE_PASSWORD" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Snowflake secrets not configured — skipping SQL integration tests"
+            echo "::warning::Snowflake secrets not configured for ${{ matrix.cloud }} — skipping"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -119,28 +136,39 @@ jobs:
             --ignore=tests/test_e2e \
             --timeout=120 \
             -v --tb=short \
-            --junitxml=test-results.xml
+            --junitxml=test-results-${{ matrix.cloud }}.xml
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always() && steps.check_secrets.outputs.skip != 'true'
         with:
-          name: test-results
-          path: poc/test-results.xml
+          name: test-results-${{ matrix.cloud }}
+          path: poc/test-results-${{ matrix.cloud }}.xml
 
   # -----------------------------------------------------------------------
-  # E2E browser tests — requires Snowflake connection + Playwright
+  # E2E browser tests — matrix across AWS, Azure, GCP
   # -----------------------------------------------------------------------
   e2e-tests:
-    name: E2E Browser Tests
+    name: E2E Tests (${{ matrix.cloud }})
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    continue-on-error: true   # E2E tests are inherently flakier; don't block the pipeline
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: [aws, azure, gcp]
+        include:
+          - cloud: aws
+            account_secret: SNOWFLAKE_ACCOUNT_AWS
+          - cloud: azure
+            account_secret: SNOWFLAKE_ACCOUNT_AZURE
+          - cloud: gcp
+            account_secret: SNOWFLAKE_ACCOUNT_GCP
     defaults:
       run:
         working-directory: poc
     env:
-      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_ACCOUNT: ${{ secrets[matrix.account_secret] }}
       SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
       SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
       POC_CONNECTION: ci
@@ -152,7 +180,7 @@ jobs:
         run: |
           if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$SNOWFLAKE_USER" ] || [ -z "$SNOWFLAKE_PASSWORD" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Snowflake secrets not configured — skipping E2E tests"
+            echo "::warning::Snowflake secrets not configured for ${{ matrix.cloud }} — skipping"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -237,7 +265,7 @@ jobs:
             echo "--- Running $test_file ---"
             uv run pytest "$test_file" \
               --timeout=120 -v --tb=short \
-              --junitxml="e2e-results-$(basename $test_file .py).xml" || EXIT_CODE=1
+              --junitxml="e2e-results-${{ matrix.cloud }}-$(basename $test_file .py).xml" || EXIT_CODE=1
           done
           exit $EXIT_CODE
 
@@ -245,13 +273,36 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always() && steps.check_secrets.outputs.skip != 'true'
         with:
-          name: e2e-test-results
-          path: poc/e2e-results-*.xml
+          name: e2e-results-${{ matrix.cloud }}
+          path: poc/e2e-results-${{ matrix.cloud }}-*.xml
 
       - name: Upload failure screenshots
         uses: actions/upload-artifact@v4
         if: failure() && steps.check_secrets.outputs.skip != 'true'
         with:
-          name: e2e-screenshots
+          name: e2e-screenshots-${{ matrix.cloud }}
           path: poc/screenshots/
           if-no-files-found: ignore
+
+  # -----------------------------------------------------------------------
+  # Summary — aggregate cross-cloud results
+  # -----------------------------------------------------------------------
+  summary:
+    name: Cross-Cloud Summary
+    runs-on: ubuntu-latest
+    needs: [unit-tests, sql-tests, e2e-tests]
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Cross-Cloud Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SQL Tests (aws) | ${{ needs.sql-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SQL Tests (azure) | ${{ needs.sql-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SQL Tests (gcp) | ${{ needs.sql-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| E2E Tests (aws) | ${{ needs.e2e-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| E2E Tests (azure) | ${{ needs.e2e-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| E2E Tests (gcp) | ${{ needs.e2e-tests.result }} |" >> $GITHUB_STEP_SUMMARY
