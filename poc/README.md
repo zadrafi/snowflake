@@ -836,6 +836,7 @@ ai_extract_poc/
     ├── test_sql_integration.py            # All SQL objects exist with correct schema
     ├── test_sql_parity.py                 # SQL script vs live object parity
     ├── test_teardown_idempotency.py       # Teardown script idempotency
+    ├── test_user_workflow_e2e.py          # Full user workflow: approve, correct, rollback
     ├── test_utility_bill_extraction.py    # Utility bill extraction quality
     ├── test_validation_rules.py           # Validation rule tests
     ├── test_writeback_data_validation.py  # Writeback data quality + COALESCE logic
@@ -929,7 +930,7 @@ DROP COMPUTE POOL IF EXISTS AI_EXTRACT_POC_POOL;
 
 ## Validating the Deployment (Tests)
 
-The POC includes a comprehensive test suite (1,045 tests across 43 files) that verifies every SQL object, data quality, extraction pipeline, writeback workflow, review logic, RBAC permissions, concurrency, confidence scoring, multi-doc-type isolation, and all Streamlit pages across all three Snowflake clouds (AWS, Azure, GCP). Running tests after deployment proves everything works end-to-end.
+The POC includes a comprehensive test suite (1,053 tests across 44 files) that verifies every SQL object, data quality, extraction pipeline, writeback workflow, review logic, RBAC permissions, concurrency, confidence scoring, multi-doc-type isolation, all Streamlit pages across all three Snowflake clouds (AWS, Azure, GCP), and a full user workflow E2E test. Running tests after deployment proves everything works end-to-end.
 
 > **If you only ran the SQL scripts in Snowsight** (steps 1-7), the tests are optional but recommended. They catch issues like missing grants, encryption mismatches, and parse failures that you might not notice manually.
 
@@ -1164,12 +1165,13 @@ uv run pytest tests/test_e2e/test_poc_multi_doc.py -v
 | `test_sql_integration.py` | 52 | Every SQL object: tables, columns, PKs, views, stream, task, stored proc |
 | `test_sql_parity.py` | 10 | SQL script DDL matches live Snowflake objects |
 | `test_teardown_idempotency.py` | 15 | Teardown script is idempotent (safe to run multiple times) |
+| `test_user_workflow_e2e.py` | 8 | Full user workflow: approve, correct, re-edit, audit trail, rollback |
 | `test_utility_bill_extraction.py` | 49 | Utility bill extraction quality: account number, service dates, charges |
 | `test_validation_rules.py` | 27 | Validation rule tests: per-doc-type rules, boundary conditions |
 | `test_writeback_data_validation.py` | 20 | Writeback data quality, corrected field types, review status values |
 | `test_writeback_integration.py` | 19 | INVOICE_REVIEW table operations, V_INVOICE_SUMMARY, COALESCE override |
 | `test_e2e/` (7 files) | 103 | Playwright browser tests: all 5 pages + Admin + multi-doc flows, no exceptions |
-| **Total** | **~1,045** | **942 non-E2E + 103 E2E across 43 test files** |
+| **Total** | **~1,053** | **950 non-E2E + 103 E2E across 44 test files** |
 
 ### Cross-Cloud Verification
 
