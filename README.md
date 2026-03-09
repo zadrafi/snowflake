@@ -353,7 +353,7 @@ convenience-store-accounts-payable/
 
 ## AI_EXTRACT POC Kit
 
-The `poc/` directory contains a standalone, reusable **AI_EXTRACT POC Kit** — a complete proof-of-concept for extracting structured data from any document type (invoices, contracts, receipts) using Snowflake Cortex AI_EXTRACT.
+The `poc/` directory contains a standalone, reusable **AI_EXTRACT POC Kit** — a complete proof-of-concept for extracting structured data from any document type (invoices, contracts, receipts, utility bills) using Snowflake Cortex AI_EXTRACT.
 
 ### Key Features Beyond the Demo App
 
