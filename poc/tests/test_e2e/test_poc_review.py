@@ -222,7 +222,7 @@ class TestReviewSaveRoundTrip:
         status_col_idx = None
         for i in range(headers.count()):
             header_text = headers.nth(i).inner_text()
-            if "Status" in header_text:
+            if "status" in header_text.lower():
                 status_col_idx = i
                 break
 
@@ -497,7 +497,7 @@ class TestReviewValidation:
         headers = editor.first.locator('[role="columnheader"]')
         vendor_col_idx = None
         for i in range(headers.count()):
-            if "Vendor" in headers.nth(i).inner_text():
+            if "vendor" in headers.nth(i).inner_text().lower():
                 vendor_col_idx = i
                 break
 
