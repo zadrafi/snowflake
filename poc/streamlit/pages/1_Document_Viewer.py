@@ -83,17 +83,21 @@ if selected_type != "ALL":
     sender_type_clause = "AND rd.doc_type = ?"
     sender_type_params = [selected_type]
 
-senders = session.sql(
-    f"""
-    SELECT DISTINCT ef.field_1 AS sender
-    FROM {DB}.EXTRACTED_FIELDS ef
-        JOIN {DB}.RAW_DOCUMENTS rd ON ef.file_name = rd.file_name
-    WHERE ef.field_1 IS NOT NULL {sender_type_clause}
-    ORDER BY sender
-    """,
-    params=sender_type_params,
-).to_pandas()
-sender_list = ["ALL"] + senders["SENDER"].tolist()
+try:
+    senders = session.sql(
+        f"""
+        SELECT DISTINCT ef.field_1 AS sender
+        FROM {DB}.EXTRACTED_FIELDS ef
+            JOIN {DB}.RAW_DOCUMENTS rd ON ef.file_name = rd.file_name
+        WHERE ef.field_1 IS NOT NULL {sender_type_clause}
+        ORDER BY sender
+        """,
+        params=sender_type_params,
+    ).to_pandas()
+    sender_list = ["ALL"] + senders["SENDER"].tolist()
+except Exception as e:
+    st.error(f"Could not load sender list: {e}")
+    sender_list = ["ALL"]
 
 with col_f1:
     selected_sender = st.selectbox(labels.get("sender_label", "Sender / Vendor"), sender_list)
@@ -136,7 +140,11 @@ ledger_query = f"""
     ORDER BY ef.field_4 DESC NULLS LAST
 """
 
-ledger_df = session.sql(ledger_query, params=params).to_pandas()
+try:
+    ledger_df = session.sql(ledger_query, params=params).to_pandas()
+except Exception as e:
+    st.error(f"Could not load documents: {e}")
+    ledger_df = pd.DataFrame()
 
 # --- Document list ---
 st.subheader(f"Documents ({len(ledger_df)} results)")
@@ -149,53 +157,56 @@ if len(ledger_df) > 0:
         aging_type_clause = "AND doc_type = ?"
         aging_params = [selected_type]
 
-    aging_data = session.sql(
-        f"""
-        SELECT
-            aging_bucket,
-            COUNT(*)              AS document_count,
-            SUM(total_amount)     AS total_amount,
-            sort_order
-        FROM (
+    try:
+        aging_data = session.sql(
+            f"""
             SELECT
-                total_amount,
-                doc_type,
-                CASE
-                    WHEN due_date IS NULL              THEN 'N/A'
-                    WHEN due_date >= CURRENT_DATE()    THEN 'Current'
-                    WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 30  THEN '1-30 Days'
-                    WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 60  THEN '31-60 Days'
-                    WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 90  THEN '61-90 Days'
-                    ELSE '90+ Days'
-                END AS aging_bucket,
-                CASE
-                    WHEN due_date IS NULL              THEN 99
-                    WHEN due_date >= CURRENT_DATE()    THEN 0
-                    WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 30  THEN 1
-                    WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 60  THEN 2
-                    WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 90  THEN 3
-                    ELSE 4
-                END AS sort_order
-            FROM {DB}.V_DOCUMENT_LEDGER
-        ) sub
-        WHERE 1=1 {aging_type_clause}
-        GROUP BY aging_bucket, sort_order
-        ORDER BY sort_order
-        """,
-        params=aging_params,
-    ).to_pandas()
-    if len(aging_data) > 0:
-        aging_cols = st.columns(len(aging_data))
-        for i, row in aging_data.iterrows():
-            with aging_cols[i]:
-                label = row["AGING_BUCKET"]
-                count = int(row["DOCUMENT_COUNT"])
-                amount = row["TOTAL_AMOUNT"]
-                if amount and amount > 0:
-                    st.metric(label=label, value=f"${amount:,.0f}", delta=f"{count} docs")
-                else:
-                    st.metric(label=label, value=f"{count} docs")
-        st.divider()
+                aging_bucket,
+                COUNT(*)              AS document_count,
+                SUM(total_amount)     AS total_amount,
+                sort_order
+            FROM (
+                SELECT
+                    total_amount,
+                    doc_type,
+                    CASE
+                        WHEN due_date IS NULL              THEN 'N/A'
+                        WHEN due_date >= CURRENT_DATE()    THEN 'Current'
+                        WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 30  THEN '1-30 Days'
+                        WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 60  THEN '31-60 Days'
+                        WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 90  THEN '61-90 Days'
+                        ELSE '90+ Days'
+                    END AS aging_bucket,
+                    CASE
+                        WHEN due_date IS NULL              THEN 99
+                        WHEN due_date >= CURRENT_DATE()    THEN 0
+                        WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 30  THEN 1
+                        WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 60  THEN 2
+                        WHEN DATEDIFF('day', due_date, CURRENT_DATE()) <= 90  THEN 3
+                        ELSE 4
+                    END AS sort_order
+                FROM {DB}.V_DOCUMENT_LEDGER
+            ) sub
+            WHERE 1=1 {aging_type_clause}
+            GROUP BY aging_bucket, sort_order
+            ORDER BY sort_order
+            """,
+            params=aging_params,
+        ).to_pandas()
+        if len(aging_data) > 0:
+            aging_cols = st.columns(len(aging_data))
+            for i, row in aging_data.iterrows():
+                with aging_cols[i]:
+                    label = row["AGING_BUCKET"]
+                    count = int(row["DOCUMENT_COUNT"])
+                    amount = row["TOTAL_AMOUNT"]
+                    if amount and amount > 0:
+                        st.metric(label=label, value=f"${amount:,.0f}", delta=f"{count} docs")
+                    else:
+                        st.metric(label=label, value=f"{count} docs")
+            st.divider()
+    except Exception as e:
+        st.error(f"Could not load aging data: {e}")
 
     st.dataframe(
         ledger_df,
@@ -313,22 +324,26 @@ if len(ledger_df) > 0:
                 st.session_state.line_save_result = None
                 st.rerun()
 
-        line_items = session.sql(
-            f"""
-            SELECT
-                line_id,
-                line_number,
-                description,
-                category,
-                quantity,
-                unit_price,
-                line_total
-            FROM {DB}.V_LINE_ITEM_DETAIL
-            WHERE file_name = ?
-            ORDER BY line_number
-            """,
-            params=[file_name_for_lines],
-        ).to_pandas()
+        try:
+            line_items = session.sql(
+                f"""
+                SELECT
+                    line_id,
+                    line_number,
+                    description,
+                    category,
+                    quantity,
+                    unit_price,
+                    line_total
+                FROM {DB}.V_LINE_ITEM_DETAIL
+                WHERE file_name = ?
+                ORDER BY line_number
+                """,
+                params=[file_name_for_lines],
+            ).to_pandas()
+        except Exception as e:
+            st.error(f"Could not load line items: {e}")
+            line_items = pd.DataFrame()
 
         if len(line_items) > 0:
             line_filter_key = f"lines|{file_name_for_lines}"
@@ -443,7 +458,11 @@ if len(ledger_df) > 0:
                             raw_val = row.get(col)
                             if raw_val is not None and not (isinstance(raw_val, float) and pd.isna(raw_val)):
                                 try:
-                                    float(raw_val)
+                                    f = float(raw_val)
+                                    if col == "QUANTITY" and f < 0:
+                                        validation_errors.append(f"Line #{ln} — Quantity: negative value ({f})")
+                                    if col in ("UNIT_PRICE", "LINE_TOTAL") and (f > 9999999999.99 or f < -9999999999.99):
+                                        validation_errors.append(f"Line #{ln} — {col.replace('_', ' ').title()}: value {f} exceeds allowed range (±9,999,999,999.99)")
                                 except (ValueError, TypeError):
                                     validation_errors.append(f"Line #{ln} — {col.replace('_', ' ').title()}: '{raw_val}' is not a valid number")
 
@@ -468,31 +487,34 @@ if len(ledger_df) > 0:
                             if cval is not None:
                                 corrections_dict[ext_col] = cval
 
-                        session.sql(
-                            f"""
-                            INSERT INTO {DB}.LINE_ITEM_REVIEW (
-                                line_id, file_name, record_id,
-                                corrected_col_1, corrected_col_2,
-                                corrected_col_3, corrected_col_4, corrected_col_5,
-                                corrections
-                            ) SELECT
-                                ?, ?, ?,
-                                ?, ?, ?, ?, ?,
-                                PARSE_JSON(?)
-                            """,
-                            params=[_to_native(p) for p in [
-                                int(line_id),
-                                str(file_name_for_lines),
-                                record_id,
-                                _safe_str(row.get("DESCRIPTION")),
-                                _safe_str(row.get("CATEGORY")),
-                                _safe_num(row.get("QUANTITY")),
-                                _safe_num(row.get("UNIT_PRICE")),
-                                _safe_num(row.get("LINE_TOTAL")),
-                                json.dumps(corrections_dict),
-                            ]],
-                        ).collect()
-                        saved += 1
+                        try:
+                            session.sql(
+                                f"""
+                                INSERT INTO {DB}.LINE_ITEM_REVIEW (
+                                    line_id, file_name, record_id,
+                                    corrected_col_1, corrected_col_2,
+                                    corrected_col_3, corrected_col_4, corrected_col_5,
+                                    corrections
+                                ) SELECT
+                                    ?, ?, ?,
+                                    ?, ?, ?, ?, ?,
+                                    PARSE_JSON(?)
+                                """,
+                                params=[_to_native(p) for p in [
+                                    int(line_id),
+                                    str(file_name_for_lines),
+                                    record_id,
+                                    _safe_str(row.get("DESCRIPTION")),
+                                    _safe_str(row.get("CATEGORY")),
+                                    _safe_num(row.get("QUANTITY")),
+                                    _safe_num(row.get("UNIT_PRICE")),
+                                    _safe_num(row.get("LINE_TOTAL")),
+                                    json.dumps(corrections_dict),
+                                ]],
+                            ).collect()
+                            saved += 1
+                        except Exception as e:
+                            st.error(f"Could not save line item #{line_id}: {e}")
 
                     st.session_state.line_save_result = {"count": saved, "file": file_name_for_lines}
                     st.session_state.line_orig_key = None

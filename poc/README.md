@@ -788,7 +788,8 @@ ai_extract_poc/
 │   ├── 07_deploy_streamlit.sql            # Deploy the Streamlit dashboard (optional)
 │   ├── 08_writeback.sql                   # INVOICE_REVIEW table + V_INVOICE_SUMMARY view
 │   ├── 09_document_types.sql              # DOCUMENT_TYPE_CONFIG table + seed rows
-│   ├── 10_harden.sql                      # Production hardening (ownership, managed access, resource monitor)
+│   ├── 09_line_item_review.sql            # LINE_ITEM_REVIEW table + V_LINE_ITEM_DETAIL view
+│   ├── 10_harden.sql                      # Production hardening (ownership, managed access, resource monitor, retention)
 │   └── 11_alerts.sql                      # Extraction failure alert + health check procedure
 ├── streamlit/
 │   ├── streamlit_app.py                   # Landing page + pipeline overview
@@ -1517,14 +1518,21 @@ This section provides a comprehensive, step-by-step guide for building a fully e
 │  ┌─────┴─────┐       ┌─────┴──────┐    ┌────────────┴───────────────┐  │
 │  │ Snowpipe / │       │  Stream    │    │  Analytical Views          │  │
 │  │ Auto-ingest│       │  + Task    │    │  (V_DOCUMENT_LEDGER,       │  │
-│  │ (optional) │       │  (5-min)   │    │   V_SUMMARY_BY_VENDOR,     │  │
-│  └────────────┘       └────────────┘    │   V_EXTRACTION_STATUS)     │  │
+│  │ (optional) │       │  (5-min)   │    │   V_DOCUMENT_SUMMARY,      │  │
+│  └────────────┘       └────────────┘    │   V_LINE_ITEM_DETAIL,      │  │
+│                                         │   V_EXTRACTION_STATUS)     │  │
 │                                         └────────────┬───────────────┘  │
+│                                                      │                  │
+│  ┌────────────────────────────┐                      │                  │
+│  │  DOCUMENT_TYPE_CONFIG      │                      │                  │
+│  │  (prompts, labels, types)  │                      │                  │
+│  └────────────────────────────┘                      │                  │
 │                                                      │                  │
 │  ┌────────────────────────────┐    ┌─────────────────┴──────────────┐  │
 │  │  INVOICE_REVIEW            │    │  Streamlit Dashboard           │  │
-│  │  (append-only audit trail) │◄───│  (review, approve, correct)    │  │
-│  └────────────────────────────┘    └────────────────────────────────┘  │
+│  │  LINE_ITEM_REVIEW          │◄───│  (review, approve, correct)    │  │
+│  │  (append-only audit trails)│    └────────────────────────────────┘  │
+│  └────────────────────────────┘                      │                  │
 │                                                      │                  │
 │  ┌────────────────────────────┐    ┌─────────────────┴──────────────┐  │
 │  │  Resource Monitor          │    │  Extraction Failure Alert      │  │

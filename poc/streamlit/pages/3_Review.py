@@ -108,12 +108,16 @@ with col_f2:
         vendor_type_clause = "AND doc_type = ?"
         vendor_type_params = [selected_type]
 
-    vendor_list_df = session.sql(
-        f"SELECT DISTINCT vendor_name FROM {DB}.V_DOCUMENT_SUMMARY "
-        f"WHERE vendor_name IS NOT NULL {vendor_type_clause} ORDER BY vendor_name",
-        params=vendor_type_params,
-    ).to_pandas()
-    vendor_options = ["ALL"] + vendor_list_df["VENDOR_NAME"].tolist()
+    try:
+        vendor_list_df = session.sql(
+            f"SELECT DISTINCT vendor_name FROM {DB}.V_DOCUMENT_SUMMARY "
+            f"WHERE vendor_name IS NOT NULL {vendor_type_clause} ORDER BY vendor_name",
+            params=vendor_type_params,
+        ).to_pandas()
+        vendor_options = ["ALL"] + vendor_list_df["VENDOR_NAME"].tolist()
+    except Exception as e:
+        st.error(f"Could not load vendor list: {e}")
+        vendor_options = ["ALL"]
     selected_vendor = st.selectbox(sender_label, vendor_options)
 
 # ── Build query ──────────────────────────────────────────────────────────────
@@ -145,7 +149,11 @@ query = f"""
     ORDER BY record_id DESC
 """
 
-original_df = session.sql(query, params=params).to_pandas()
+try:
+    original_df = session.sql(query, params=params).to_pandas()
+except Exception as e:
+    st.error(f"Could not load documents: {e}")
+    original_df = pd.DataFrame()
 
 display_name = config.get("display_name", "Document") if config else "Document"
 st.subheader(f"{display_name}s ({len(original_df)} results)")
@@ -415,42 +423,44 @@ if changed_rows:
 
             corrections_json = json.dumps(corrections_dict)
 
-            # Also populate legacy corrected_* columns for backward compat
-            session.sql(
-                f"""
-                INSERT INTO {DB}.INVOICE_REVIEW (
-                    record_id, file_name, review_status,
-                    corrected_vendor_name, corrected_invoice_number,
-                    corrected_po_number, corrected_invoice_date,
-                    corrected_due_date, corrected_payment_terms,
-                    corrected_recipient, corrected_subtotal,
-                    corrected_tax_amount, corrected_total,
-                    reviewer_notes, corrections
-                ) SELECT
-                    ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, PARSE_JSON(?)
-                """,
-                params=[_to_native(p) for p in [
-                    record_id,
-                    file_name,
-                    status,
-                    _safe_str(row.get("VENDOR_NAME")),
-                    _safe_str(row.get("INVOICE_NUMBER")),
-                    _safe_str(row.get("PO_NUMBER")),
-                    _safe_date(row.get("INVOICE_DATE")),
-                    _safe_date(row.get("DUE_DATE")),
-                    _safe_str(row.get("PAYMENT_TERMS")),
-                    _safe_str(row.get("RECIPIENT")),
-                    _safe_num(row.get("SUBTOTAL")),
-                    _safe_num(row.get("TAX_AMOUNT")),
-                    _safe_num(row.get("TOTAL_AMOUNT")),
-                    _safe_str(row.get("REVIEWER_NOTES")),
-                    corrections_json,
-                ]],
-            ).collect()
-            saved += 1
-            saved_ids.append(record_id)
+            try:
+                session.sql(
+                    f"""
+                    INSERT INTO {DB}.INVOICE_REVIEW (
+                        record_id, file_name, review_status,
+                        corrected_vendor_name, corrected_invoice_number,
+                        corrected_po_number, corrected_invoice_date,
+                        corrected_due_date, corrected_payment_terms,
+                        corrected_recipient, corrected_subtotal,
+                        corrected_tax_amount, corrected_total,
+                        reviewer_notes, corrections
+                    ) SELECT
+                        ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, PARSE_JSON(?)
+                    """,
+                    params=[_to_native(p) for p in [
+                        record_id,
+                        file_name,
+                        status,
+                        _safe_str(row.get("VENDOR_NAME")),
+                        _safe_str(row.get("INVOICE_NUMBER")),
+                        _safe_str(row.get("PO_NUMBER")),
+                        _safe_date(row.get("INVOICE_DATE")),
+                        _safe_date(row.get("DUE_DATE")),
+                        _safe_str(row.get("PAYMENT_TERMS")),
+                        _safe_str(row.get("RECIPIENT")),
+                        _safe_num(row.get("SUBTOTAL")),
+                        _safe_num(row.get("TAX_AMOUNT")),
+                        _safe_num(row.get("TOTAL_AMOUNT")),
+                        _safe_str(row.get("REVIEWER_NOTES")),
+                        corrections_json,
+                    ]],
+                ).collect()
+                saved += 1
+                saved_ids.append(record_id)
+            except Exception as e:
+                st.error(f"Could not save record {record_id}: {e}")
 
         # Store result and clear snapshot so next load re-fetches
         st.session_state.save_result = {"count": saved, "record_ids": saved_ids}
@@ -484,22 +494,26 @@ if doc_choices:
     selected_file = str(doc_options_df.iloc[selected_idx]["FILE_NAME"])
     selected_record_id = int(doc_options_df.iloc[selected_idx]["RECORD_ID"])
 
-    line_items = session.sql(
-        f"""
-        SELECT
-            line_id,
-            line_number,
-            description,
-            category,
-            quantity,
-            unit_price,
-            line_total
-        FROM {DB}.V_LINE_ITEM_DETAIL
-        WHERE file_name = ?
-        ORDER BY line_number
-        """,
-        params=[selected_file],
-    ).to_pandas()
+    try:
+        line_items = session.sql(
+            f"""
+            SELECT
+                line_id,
+                line_number,
+                description,
+                category,
+                quantity,
+                unit_price,
+                line_total
+            FROM {DB}.V_LINE_ITEM_DETAIL
+            WHERE file_name = ?
+            ORDER BY line_number
+            """,
+            params=[selected_file],
+        ).to_pandas()
+    except Exception as e:
+        st.error(f"Could not load line items: {e}")
+        line_items = pd.DataFrame()
 
     if len(line_items) > 0:
         line_filter_key = f"review_lines|{selected_file}"
@@ -614,7 +628,11 @@ if doc_choices:
                         raw_val = row.get(col)
                         if raw_val is not None and not (isinstance(raw_val, float) and pd.isna(raw_val)):
                             try:
-                                float(raw_val)
+                                f = float(raw_val)
+                                if col == "QUANTITY" and f < 0:
+                                    validation_errors.append(f"Line #{ln} — Quantity: negative value ({f})")
+                                if col in ("UNIT_PRICE", "LINE_TOTAL") and (f > 9999999999.99 or f < -9999999999.99):
+                                    validation_errors.append(f"Line #{ln} — {col.replace('_', ' ').title()}: value {f} exceeds allowed range (±9,999,999,999.99)")
                             except (ValueError, TypeError):
                                 validation_errors.append(f"Line #{ln} — {col.replace('_', ' ').title()}: '{raw_val}' is not a valid number")
 
@@ -638,31 +656,34 @@ if doc_choices:
                         if cval is not None:
                             corrections_dict[ext_col] = cval
 
-                    session.sql(
-                        f"""
-                        INSERT INTO {DB}.LINE_ITEM_REVIEW (
-                            line_id, file_name, record_id,
-                            corrected_col_1, corrected_col_2,
-                            corrected_col_3, corrected_col_4, corrected_col_5,
-                            corrections
-                        ) SELECT
-                            ?, ?, ?,
-                            ?, ?, ?, ?, ?,
-                            PARSE_JSON(?)
-                        """,
-                        params=[_to_native(p) for p in [
-                            int(line_id),
-                            str(selected_file),
-                            int(selected_record_id),
-                            _li_safe_str(row.get("DESCRIPTION")),
-                            _li_safe_str(row.get("CATEGORY")),
-                            _li_safe_num(row.get("QUANTITY")),
-                            _li_safe_num(row.get("UNIT_PRICE")),
-                            _li_safe_num(row.get("LINE_TOTAL")),
-                            json.dumps(corrections_dict),
-                        ]],
-                    ).collect()
-                    saved += 1
+                    try:
+                        session.sql(
+                            f"""
+                            INSERT INTO {DB}.LINE_ITEM_REVIEW (
+                                line_id, file_name, record_id,
+                                corrected_col_1, corrected_col_2,
+                                corrected_col_3, corrected_col_4, corrected_col_5,
+                                corrections
+                            ) SELECT
+                                ?, ?, ?,
+                                ?, ?, ?, ?, ?,
+                                PARSE_JSON(?)
+                            """,
+                            params=[_to_native(p) for p in [
+                                int(line_id),
+                                str(selected_file),
+                                int(selected_record_id),
+                                _li_safe_str(row.get("DESCRIPTION")),
+                                _li_safe_str(row.get("CATEGORY")),
+                                _li_safe_num(row.get("QUANTITY")),
+                                _li_safe_num(row.get("UNIT_PRICE")),
+                                _li_safe_num(row.get("LINE_TOTAL")),
+                                json.dumps(corrections_dict),
+                            ]],
+                        ).collect()
+                        saved += 1
+                    except Exception as e:
+                        st.error(f"Could not save line item #{line_id}: {e}")
 
                 st.session_state.line_save_result = {"count": saved, "file": selected_file}
                 st.session_state.review_line_orig_key = None
