@@ -2,7 +2,7 @@
 
 **Input**: Design documents from `.specify/`
 **Prerequisites**: plan.md, spec.md
-**Updated**: 2026-03-07
+**Updated**: 2026-03-11
 
 ## Phase 1: Setup
 
@@ -131,3 +131,18 @@
 - [x] T078 Fix cross-cloud issues: missing DOC_TYPE column, missing INVOICE_REVIEW/DOCUMENT_TYPE_CONFIG tables, missing V_INVOICE_SUMMARY view, missing 3_Review.py on STREAMLIT_STAGE
 - [x] T079 Document cross-cloud testing commands and results in poc/README.md, CLAUDE.md, README.md, DESIGN.md
 - [x] T080 Update all documentation with RBAC, multi-doc-type, and cross-cloud learnings
+
+## Phase 16: E2E Test Hardening
+
+- [x] T081 Fix `sf_cursor` fixture — session-scoped Snowflake connection with `POC_CONNECTION` env var, proper role/warehouse/database/schema context
+- [x] T082 Add viewport guards — explicit `page.set_viewport_size({"width": 1280, "height": 900})` in E2E tests to prevent flaky element visibility
+- [x] T083 Add data guards — E2E tests `pytest.skip()` gracefully when required Snowflake data is missing (vs. hard failure)
+- [x] T084 Add DB round-trip verification — E2E save tests INSERT via UI, then SELECT via `sf_cursor` to confirm data landed in Snowflake, then DELETE test rows
+- [x] T085 Create `test_line_item_writeback.py` — dedicated E2E tests for line item save workflow with DB verification and cleanup
+
+## Phase 17: Spec-Driven Documentation Update
+
+- [x] T086 Update `.specify/constitution.md` — add principles VI (Human-in-the-Loop Review), VII (Config-Driven Extensibility), VIII (Multi-Cloud Parity); add Security & RBAC and Test Coverage dev standards; bump to v1.2
+- [x] T087 Update `.specify/spec.md` — add user stories 7-10 (review workflow, line item review, multi-doc-type, cross-cloud); add FR-013 through FR-017; add SC-006 through SC-008
+- [x] T088 Update `.specify/plan.md` — add POC project structure, extraction + writeback data flows, RBAC architecture, SQL script dependency order, CI/CD section, test architecture
+- [x] T089 Update `.specify/tasks.md` — add Phase 16 (E2E test hardening) and Phase 17 (this documentation update)

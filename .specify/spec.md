@@ -3,6 +3,7 @@
 **Feature Branch**: `001-ap-processing-mvp`
 **Created**: 2026-03-02
 **Status**: Implemented
+**Updated**: 2026-03-11
 **Input**: Customer demo — end-to-end PDF invoice processing using AI_EXTRACT, visualized in Streamlit in Snowflake, for convenience store chains
 
 ## User Scenarios & Testing *(mandatory)*
@@ -101,6 +102,63 @@ The SE generates new PDF invoices directly inside Snowflake using a Python UDTF 
 1. **Given** the Process New page, **When** the user selects vendors and clicks generate, **Then** new PDF invoices are created via the UDTF and staged to @INVOICE_STAGE
 2. **Given** generated invoices, **When** extraction runs, **Then** the AI_EXTRACT results match the generated content
 
+---
+
+### User Story 7 - Document Review Workflow (Priority: P1)
+
+A reviewer opens the Review page and sees all extracted documents in an inline `st.data_editor` grid. They can edit any field (status, vendor name, amounts, dates, notes), then click Save. Each save INSERTs a new row into `INVOICE_REVIEW` — nothing is ever updated or deleted. The view `V_DOCUMENT_SUMMARY` always shows the latest correction per document via `ROW_NUMBER()` and `COALESCE`.
+
+**Why this priority**: AI extraction accuracy is typically 90-95%. Human-in-the-loop correction is essential for production use. The append-only pattern provides full audit traceability.
+
+**Acceptance Scenarios**:
+
+1. **Given** the Review page, **When** a reviewer edits a field and clicks Save, **Then** a new row is INSERTed into `INVOICE_REVIEW` with the correction
+2. **Given** multiple corrections for one document, **When** querying `V_DOCUMENT_SUMMARY`, **Then** only the latest correction is shown (via `ROW_NUMBER()`)
+3. **Given** a correction, **When** the corrected field is NULL, **Then** `COALESCE` falls back to the original extracted value
+4. **Given** any save, **When** querying the audit trail, **Then** all previous corrections are preserved with reviewer, timestamp, and notes
+
+---
+
+### User Story 8 - Line Item Review (Priority: P1)
+
+From the Document Viewer page, a reviewer scrolls to the line item editor and edits individual line items (description, category, quantity, unit price, line total). Each save INSERTs into `LINE_ITEM_REVIEW`. The view `V_LINE_ITEM_DETAIL` overlays corrections on original `EXTRACTED_TABLE_DATA` using the same `ROW_NUMBER()` + `COALESCE` pattern.
+
+**Why this priority**: Line items are the highest-value extraction target for AP processing. Per-line corrections are essential for reconciliation accuracy.
+
+**Acceptance Scenarios**:
+
+1. **Given** the Document Viewer line item editor, **When** a reviewer edits a Description cell and saves, **Then** a row is INSERTed into `LINE_ITEM_REVIEW` with `corrected_col_1`
+2. **Given** the view `V_LINE_ITEM_DETAIL`, **When** a line item has corrections, **Then** `COALESCE(correction, original)` returns the corrected value
+3. **Given** a fresh page load with no edits, **When** viewing line items, **Then** a "No pending changes" caption is shown
+
+---
+
+### User Story 9 - Multi-Document-Type Support (Priority: P2)
+
+The system supports multiple document types (INVOICE, CONTRACT, RECEIPT, UTILITY_BILL) via a config-driven `DOCUMENT_TYPE_CONFIG` table. Each type defines its own extraction prompts, field labels, and table column labels. Adding a new type is an INSERT — no code changes required. All Streamlit pages filter by document type.
+
+**Why this priority**: Demonstrates that the POC is not invoice-specific — it generalizes to any document type the customer needs.
+
+**Acceptance Scenarios**:
+
+1. **Given** the `DOCUMENT_TYPE_CONFIG` table, **When** a new doc type is INSERTed, **Then** the extraction pipeline and Streamlit pages pick it up automatically
+2. **Given** the Admin page, **When** viewing config, **Then** all active document types are listed with their field labels and prompts
+3. **Given** 4 built-in types, **When** filtering by type on any page, **Then** only documents of that type are shown
+
+---
+
+### User Story 10 - Cross-Cloud Deployment (Priority: P2)
+
+The POC deploys identically to AWS, Azure, and GCP Snowflake accounts. The same code, same tests, same results. CI validates all three clouds on every push.
+
+**Why this priority**: Customers run on different clouds. The POC must prove it works everywhere, not just on the SE's preferred cloud.
+
+**Acceptance Scenarios**:
+
+1. **Given** `deploy_poc.sh`, **When** run against any cloud, **Then** all objects are created and extraction succeeds
+2. **Given** the CI workflow, **When** a push to `main` occurs, **Then** unit + SQL + E2E tests run on AWS, Azure, and GCP (8 jobs total)
+3. **Given** 993+ non-E2E tests, **When** run on all 3 clouds, **Then** all pass with zero failures
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
@@ -117,6 +175,11 @@ The SE generates new PDF invoices directly inside Snowflake using a Python UDTF 
 - **FR-010**: System MUST generate PDF invoices inside Snowflake via a Python UDTF (no local dependencies for live demo)
 - **FR-011**: System MUST support dual-environment deployment via dynamic config (CURRENT_DATABASE/CURRENT_SCHEMA) with zero hardcoded values
 - **FR-012**: System MUST include a comprehensive E2E test suite (Playwright) covering all pages
+- **FR-013**: System MUST support an append-only review/correction workflow with inline `st.data_editor` and `INVOICE_REVIEW` table
+- **FR-014**: System MUST use a dedicated RBAC role (`AI_EXTRACT_APP`) with least-privilege grants — not ACCOUNTADMIN
+- **FR-015**: System MUST support multiple document types (invoices, contracts, receipts, utility bills) via configuration table with per-type prompts and UI labels
+- **FR-016**: System MUST use parameterized SQL queries (`params=[]`) throughout the Streamlit app to prevent SQL injection
+- **FR-017**: System MUST deploy and validate on all three Snowflake clouds (AWS, Azure, GCP) with identical test results
 
 ### Key Entities
 
@@ -124,6 +187,9 @@ The SE generates new PDF invoices directly inside Snowflake using a Python UDTF 
 - **Line Item**: Invoice reference, product name, quantity, unit price, line total, category
 - **Vendor**: Name, normalized name, address, payment terms
 - **Raw Invoice**: Staged filename, upload timestamp, extraction status
+- **Review**: Document-level correction record with status, corrected fields, reviewer, timestamp
+- **Line Item Review**: Line-level correction record with corrected columns, reviewer, timestamp
+- **Document Type Config**: Per-type extraction prompts, field labels, column labels, stage subfolder
 
 ## Success Criteria *(mandatory)*
 
@@ -134,3 +200,6 @@ The SE generates new PDF invoices directly inside Snowflake using a Python UDTF 
 - **SC-003**: Live extraction of 5 demo invoices completes within 2 minutes and results appear in the app
 - **SC-004**: An SE can deploy the full demo in under 15 minutes
 - **SC-005**: The demo tells a complete story (ingest → extract → automate → visualize) in a 20-minute meeting
+- **SC-006**: ~1000 automated tests pass (non-E2E + E2E) covering SQL objects, data quality, RBAC, concurrency, and every Streamlit page
+- **SC-007**: Full test suite passes on all three Snowflake clouds (AWS, Azure, GCP) with zero failures
+- **SC-008**: App runs with a least-privilege RBAC role (not ACCOUNTADMIN) on all three clouds
