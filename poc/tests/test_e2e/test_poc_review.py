@@ -254,11 +254,12 @@ class TestReviewSaveRoundTrip:
     """E2E save round-trip: edit a cell, click Save, verify confirmation."""
 
     @pytest.mark.slow
-    def test_edit_status_and_save(self, page, app_url):
+    def test_edit_status_and_save(self, page, app_url, sf_cursor):
         """Edit the Status column via selectbox cell, save, and verify confirmation.
 
         This tests the full round-trip: edit in st.data_editor -> Save button ->
         INSERT into INVOICE_REVIEW -> st.rerun() -> confirmation screen.
+        Verifies the audit row exists in DB, then cleans up.
         """
         _navigate(page, app_url)
 
@@ -318,16 +319,25 @@ class TestReviewSaveRoundTrip:
             page.wait_for_timeout(3000)
             wait_for_streamlit(page)
 
-            # After save, the page reruns and shows confirmation
             page_text = page.inner_text("body")
             assert "Saved" in page_text or "Continue Editing" in page_text, (
                 "Expected post-save confirmation screen with 'Saved' message "
                 "or 'Continue Editing' button"
             )
             assert_no_exceptions(page)
+
+            sf_cursor.execute(
+                "SELECT COUNT(*) FROM INVOICE_REVIEW "
+                "WHERE reviewed_at > DATEADD('minute', -2, CURRENT_TIMESTAMP())"
+            )
+            recent_count = sf_cursor.fetchone()[0]
+            assert recent_count >= 1, "Expected audit row in INVOICE_REVIEW after save"
+
+            sf_cursor.execute(
+                "DELETE FROM INVOICE_REVIEW "
+                "WHERE reviewed_at > DATEADD('minute', -2, CURRENT_TIMESTAMP())"
+            )
         else:
-            # If no Save button, the change may not have been detected.
-            # This can happen with Glide Data Grid timing — still verify no errors.
             assert_no_exceptions(page)
             pytest.skip("Save button not found — cell edit may not have registered")
 
@@ -524,10 +534,10 @@ class TestReviewValidation:
         assert_no_exceptions(page)
 
     @pytest.mark.slow
-    def test_edit_and_save_no_validation_error(self, page, app_url):
+    def test_edit_and_save_no_validation_error(self, page, app_url, sf_cursor):
         """Edit a text cell (vendor name), save, and verify no validation error.
 
-        Valid edits should never trigger validation errors.
+        Valid edits should never trigger validation errors. Cleans up after.
         """
         _navigate(page, app_url)
         editor = page.locator('[data-testid="stDataFrame"]')
@@ -575,6 +585,12 @@ class TestReviewValidation:
                 "Valid vendor name edit should not trigger validation"
             )
             assert_no_exceptions(page)
+
+            sf_cursor.execute(
+                "DELETE FROM INVOICE_REVIEW "
+                "WHERE corrected_vendor_name = 'Test Vendor E2E' "
+                "AND reviewed_at > DATEADD('minute', -2, CURRENT_TIMESTAMP())"
+            )
         else:
             # Edit may not have registered with Glide Data Grid
             assert_no_exceptions(page)
