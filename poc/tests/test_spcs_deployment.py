@@ -259,6 +259,7 @@ class TestRequiredSQLObjects:
         "EXTRACTED_TABLE_DATA",
         "DOCUMENT_TYPE_CONFIG",
         "INVOICE_REVIEW",
+        "LINE_ITEM_REVIEW",
     ]
 
     REQUIRED_VIEWS = [
@@ -266,6 +267,7 @@ class TestRequiredSQLObjects:
         "V_INVOICE_SUMMARY",
         "V_DOCUMENT_LEDGER",
         "V_EXTRACTION_STATUS",
+        "V_LINE_ITEM_DETAIL",
     ]
 
     REQUIRED_STAGES = [
@@ -746,6 +748,17 @@ class TestStreamlitPageSQL:
         sf_cursor.execute(f"""
             SELECT line_number, col_1, col_2, col_3, col_4, col_5
             FROM {FQ}.EXTRACTED_TABLE_DATA
+            ORDER BY line_number
+            LIMIT 10
+        """)
+        sf_cursor.fetchall()
+
+    def test_viewer_line_item_detail_view(self, sf_cursor):
+        """1_Document_Viewer.py: V_LINE_ITEM_DETAIL corrected line items query."""
+        sf_cursor.execute(f"""
+            SELECT line_id, line_number, description, category,
+                   quantity, unit_price, line_total
+            FROM {FQ}.V_LINE_ITEM_DETAIL
             ORDER BY line_number
             LIMIT 10
         """)

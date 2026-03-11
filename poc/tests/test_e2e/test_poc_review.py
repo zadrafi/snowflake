@@ -9,19 +9,82 @@ pytestmark = pytest.mark.e2e
 REVIEW_PATH = "/Review"
 
 
+def _scroll_grid_to_column(page, editor, col_name, exact=False):
+    """Navigate to a column in Glide Data Grid using keyboard navigation.
+
+    Glide Data Grid renders on canvas; <td> elements are ARIA-only with no
+    bounding boxes.  The only reliable interaction method is keyboard nav.
+
+    Clicks the canvas, presses Home, then ArrowRight until the selected cell's
+    matching header contains *col_name*.  When *exact* is True the header text
+    must equal *col_name* (case-insensitive) instead of a substring match.
+
+    Returns True if the cell is now selected, False otherwise.
+    """
+    canvas = editor.first.locator("canvas").first
+    cbox = canvas.bounding_box()
+    if not cbox:
+        return False
+    page.mouse.click(cbox["x"] + 50, cbox["y"] + 50)
+    page.wait_for_timeout(300)
+    page.keyboard.press("Home")
+    page.wait_for_timeout(200)
+
+    target = col_name.lower()
+    for _ in range(25):
+        selected = editor.first.locator('[aria-selected="true"]')
+        if selected.count() > 0:
+            colindex = selected.first.get_attribute("aria-colindex")
+            headers = editor.first.locator("[role=\"columnheader\"]")
+            for hi in range(headers.count()):
+                if headers.nth(hi).get_attribute("aria-colindex") == colindex:
+                    htext = headers.nth(hi).inner_text().lower()
+                    matched = (htext == target) if exact else (target in htext)
+                    if matched:
+                        return True
+                    break
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(200)
+    return False
+
+
+def _select_doc_type(page, doc_type="INVOICE"):
+    """Select a specific document type from the Review page filter.
+
+    The default filter is 'ALL' which may show CONTRACT docs first
+    (alphabetical). Invoice-specific tests need INVOICE selected so
+    Status/Vendor columns are present.
+    """
+    selectboxes = page.locator('[data-testid="stSelectbox"]')
+    if selectboxes.count() == 0:
+        return
+    first_sb = selectboxes.first
+    if doc_type.upper() in first_sb.inner_text().upper():
+        return
+    first_sb.click()
+    page.wait_for_timeout(300)
+    option = page.locator(f'[role="option"]:has-text("{doc_type}")')
+    if option.count() > 0:
+        option.first.click()
+        page.wait_for_timeout(3000)
+        wait_for_streamlit(page)
+        page.locator('[data-testid="stDataFrame"]').first.wait_for(state="visible", timeout=10_000)
+
+
 def _navigate(page, app_url):
     """Navigate to the Review & Approve page with retry."""
     for attempt in range(3):
         page.goto(f"{app_url}{REVIEW_PATH}", wait_until="domcontentloaded", timeout=90_000)
         wait_for_streamlit(page)
-        # Wait for either the data editor or an info message
         if (page.locator('[data-testid="stDataFrame"]').count() > 0
                 or page.locator('[data-testid="stAlert"]').count() > 0):
+            _select_doc_type(page, "INVOICE")
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(2000)
             return
         page.wait_for_timeout(2000)
     wait_for_streamlit(page)
+    _select_doc_type(page, "INVOICE")
 
 
 class TestReviewPageSmoke:
@@ -216,33 +279,15 @@ class TestReviewSaveRoundTrip:
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(500)
 
-        # The Status column is rendered as a SelectboxColumn. We need to find
-        # it among the header row.  Glide Data Grid uses role="columnheader".
-        headers = editor.first.locator('[role="columnheader"]')
-        status_col_idx = None
-        for i in range(headers.count()):
-            header_text = headers.nth(i).inner_text()
-            if "status" in header_text.lower():
-                status_col_idx = i
-                break
-
-        if status_col_idx is None:
-            pytest.skip("Status column header not found in data editor")
-
-        # Click on the first data row's status cell.
-        # In Glide Data Grid, gridcells are in row-major order.
-        # Each row has N cells matching the number of columns.
-        num_cols = headers.count()
-        # First data row status cell index = num_cols (skip header row) + status_col_idx
-        # But gridcells don't include headers, so first row = status_col_idx
-        first_status_cell = cells.nth(status_col_idx)
-
-        # Double-click to enter edit mode
-        first_status_cell.dblclick()
+        editor.first.scroll_into_view_if_needed()
         page.wait_for_timeout(500)
 
-        # Look for the dropdown overlay that Glide Data Grid renders
-        # and click "APPROVED"
+        if not _scroll_grid_to_column(page, editor, "status", exact=True):
+            pytest.skip("Status column header not found in data editor")
+
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(500)
+
         overlay = page.locator('[role="listbox"], [role="option"]')
         if overlay.count() > 0:
             # Find the APPROVED option
@@ -494,18 +539,14 @@ class TestReviewValidation:
             pytest.skip("Not enough cells")
 
         # Find a text cell (not Status column) and double-click to edit
-        headers = editor.first.locator('[role="columnheader"]')
-        vendor_col_idx = None
-        for i in range(headers.count()):
-            if "vendor" in headers.nth(i).inner_text().lower():
-                vendor_col_idx = i
-                break
+        # First scroll grid back to the left to find Vendor
+        editor.first.scroll_into_view_if_needed()
+        page.wait_for_timeout(500)
 
-        if vendor_col_idx is None:
+        if not _scroll_grid_to_column(page, editor, "vendor"):
             pytest.skip("Vendor column not found")
 
-        target_cell = cells.nth(vendor_col_idx)
-        target_cell.dblclick()
+        page.keyboard.press("Enter")
         page.wait_for_timeout(500)
 
         # Type a valid vendor name
