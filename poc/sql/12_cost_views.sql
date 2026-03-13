@@ -71,7 +71,7 @@ ORDER BY 1 DESC;
 
 -- ---------------------------------------------------------------------------
 -- V_AI_EXTRACT_COST_BY_DOC_TYPE: Credits by document type
--- Joins AI_EXTRACT calls to QUERY_HISTORY to get doc_type
+-- Matches doc_type by joining RAW_DOCUMENTS on file_name in query_text
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW V_AI_EXTRACT_COST_BY_DOC_TYPE AS
 WITH ai_calls AS (
@@ -80,16 +80,24 @@ WITH ai_calls AS (
         a.start_time::DATE                          AS usage_date,
         a.credits                                   AS ai_credits,
         PARSE_JSON(a.metrics[0]:value)::INT          AS tokens,
-        COALESCE(
-            REGEXP_SUBSTR(q.query_tag, 'doc_type=([A-Za-z_]+)', 1, 1, 'e'),
-            UPPER(REGEXP_SUBSTR(q.query_text, 'doc_type\s*=\s*''([A-Za-z_]+)''', 1, 1, 'ie')),
-            'UNKNOWN'
-        )                                            AS doc_type,
+        q.query_text,
         q.total_elapsed_time / 1000.0                AS elapsed_sec
     FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY a
     LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY q ON a.query_id = q.query_id
     WHERE a.function_name = 'AI_EXTRACT'
       AND a.start_time >= DATEADD('day', -90, CURRENT_TIMESTAMP())
+),
+file_match AS (
+    SELECT
+        ac.query_id,
+        ac.usage_date,
+        ac.ai_credits,
+        ac.tokens,
+        ac.elapsed_sec,
+        COALESCE(r.doc_type, 'UNKNOWN') AS doc_type
+    FROM ai_calls ac
+    LEFT JOIN RAW_DOCUMENTS r
+        ON ac.query_text ILIKE '%' || r.file_name || '%'
 )
 SELECT
     doc_type,
@@ -99,7 +107,7 @@ SELECT
     SUM(tokens)                           AS total_tokens,
     ROUND(SUM(elapsed_sec), 1)            AS total_elapsed_sec,
     ROUND(AVG(elapsed_sec), 1)            AS avg_elapsed_sec
-FROM ai_calls
+FROM file_match
 GROUP BY 1, 2
 ORDER BY 2 DESC, 1;
 
@@ -130,15 +138,13 @@ SELECT
     a.start_time,
     a.credits                                        AS ai_credits,
     PARSE_JSON(a.metrics[0]:value)::INT               AS tokens,
-    COALESCE(
-        REGEXP_SUBSTR(q.query_tag, 'doc_type=([A-Za-z_]+)', 1, 1, 'e'),
-        'UNKNOWN'
-    )                                                 AS doc_type,
+    COALESCE(r.doc_type, 'UNKNOWN')                   AS doc_type,
     q.total_elapsed_time / 1000.0                     AS elapsed_sec,
     q.rows_produced,
     q.query_text
 FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY a
 LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY q ON a.query_id = q.query_id
+LEFT JOIN RAW_DOCUMENTS r ON q.query_text ILIKE '%' || r.file_name || '%'
 WHERE a.function_name = 'AI_EXTRACT'
   AND a.start_time >= DATEADD('day', -30, CURRENT_TIMESTAMP())
 ORDER BY a.start_time DESC

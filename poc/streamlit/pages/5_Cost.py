@@ -440,10 +440,10 @@ with col_right:
     st.subheader("Credits by Document Type")
     try:
         by_type = session.sql(
-            f"SELECT doc_type, SUM(ai_extract_credits) AS total_credits, "
-            f"SUM(call_count) AS calls, SUM(total_tokens) AS tokens "
-            f"FROM {DB}.V_AI_EXTRACT_COST_BY_DOC_TYPE "
-            f"WHERE usage_date >= DATEADD('day', -{day_range}, CURRENT_DATE()) "
+            f"SELECT doc_type, COUNT(*) AS calls, "
+            f"ROUND(SUM(ai_credits), 6) AS total_credits, SUM(tokens) AS tokens "
+            f"FROM {DB}.V_AI_EXTRACT_COST_PER_PDF "
+            f"WHERE start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP()) "
             f"GROUP BY doc_type ORDER BY total_credits DESC"
         ).to_pandas()
         if len(by_type) > 0:
@@ -463,7 +463,7 @@ with col_right:
                 display_type.columns = ["Doc Type", "Calls", "Tokens"]
             else:
                 display_type = by_type.copy()
-                display_type.columns = ["Doc Type", "AI Credits", "Calls", "Tokens"]
+                display_type.columns = ["Doc Type", "Calls", "AI Credits", "Tokens"]
                 if show_usd:
                     display_type["Est. USD"] = display_type["AI Credits"] * credit_rate
             st.dataframe(
