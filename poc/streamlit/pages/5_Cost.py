@@ -304,14 +304,15 @@ st.subheader("Cost vs Confidence — Quality-Cost Tradeoff")
 st.caption("Do higher-cost extractions produce higher-confidence results?")
 try:
     cost_conf = session.sql(f"""
-        WITH conf AS (
+        WITH conf_flat AS (
             SELECT
                 e.file_name,
                 r.doc_type,
-                e.raw_extraction:_confidence AS conf_json,
-                ARRAY_SIZE(OBJECT_KEYS(e.raw_extraction:_confidence)) AS n_fields
+                ARRAY_SIZE(OBJECT_KEYS(e.raw_extraction:_confidence)) AS n_fields,
+                f.value::FLOAT AS field_conf
             FROM {DB}.EXTRACTED_FIELDS e
-            JOIN {DB}.RAW_DOCUMENTS r ON e.file_name = r.file_name
+            JOIN {DB}.RAW_DOCUMENTS r ON e.file_name = r.file_name,
+            LATERAL FLATTEN(input => e.raw_extraction:_confidence) f
             WHERE e.raw_extraction:_confidence IS NOT NULL
         ),
         conf_avg AS (
@@ -319,11 +320,9 @@ try:
                 file_name,
                 doc_type,
                 n_fields,
-                -- avg of all confidence values in the JSON object
-                (SELECT AVG(v.value::FLOAT)
-                 FROM TABLE(FLATTEN(input => conf_json)) v
-                ) AS avg_confidence
-            FROM conf
+                AVG(field_conf) AS avg_confidence
+            FROM conf_flat
+            GROUP BY 1, 2, 3
         )
         SELECT
             ca.file_name,
@@ -575,9 +574,9 @@ else:
     st.caption("These are the other credit costs for running the pipeline — warehouse compute, Streamlit hosting, etc.")
 
 if not hide_credits:
-    infra_col1, infra_col2 = st.columns(2)
+    st.caption("Click each section to load data from ACCOUNT_USAGE views (may take a few seconds).")
 
-    with infra_col1:
+    with st.expander("Warehouse Credits (AI_EXTRACT_WH)"):
         try:
             wh_credits = session.sql(f"""
                 SELECT
@@ -590,7 +589,7 @@ if not hide_credits:
             """).to_pandas()
             if len(wh_credits) > 0:
                 total_wh = wh_credits["WAREHOUSE_CREDITS"].sum()
-                st.metric("Warehouse Credits (AI_EXTRACT_WH)", f"{total_wh:.4f}",
+                st.metric("Warehouse Credits", f"{total_wh:.4f}",
                           delta=f"${total_wh * credit_rate:.2f} USD" if show_usd else None)
                 fig_wh = px.bar(
                     wh_credits, x="USAGE_DATE", y="WAREHOUSE_CREDITS",
@@ -600,10 +599,12 @@ if not hide_credits:
                 fig_wh.update_layout(height=250, margin=dict(l=20, r=20, t=10, b=20))
                 st.plotly_chart(fig_wh, use_container_width=True)
                 st.caption("Includes idle time, auto-suspend gaps, all queries (not just AI_EXTRACT)")
+            else:
+                st.info("No warehouse usage for AI_EXTRACT_WH in this period.")
         except Exception as e:
             st.warning(f"Could not load warehouse credits: {e}")
 
-    with infra_col2:
+    with st.expander("SPCS Credits (Streamlit Hosting)"):
         try:
             spcs_credits = session.sql(f"""
                 SELECT
@@ -616,7 +617,7 @@ if not hide_credits:
             """).to_pandas()
             if len(spcs_credits) > 0:
                 total_spcs = spcs_credits["SPCS_CREDITS"].sum()
-                st.metric("SPCS Credits (Streamlit Hosting)", f"{total_spcs:.4f}",
+                st.metric("SPCS Credits", f"{total_spcs:.4f}",
                           delta=f"${total_spcs * credit_rate:.2f} USD" if show_usd else None)
                 fig_spcs = px.bar(
                     spcs_credits, x="USAGE_DATE", y="SPCS_CREDITS",
