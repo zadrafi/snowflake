@@ -44,7 +44,7 @@ jobs:
       - name: Run detect-secrets
         run: |
           pip install detect-secrets
-          detect-secrets scan --update .secrets.baseline
+          detect-secrets scan --baseline .secrets.baseline
           detect-secrets audit --report .secrets.baseline
 
       - name: Check for private keys
