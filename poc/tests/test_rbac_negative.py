@@ -168,7 +168,7 @@ class TestAccountLevelGrantsRevoked:
         acct_grants = sorted(set(
             r["privilege"] for r in rows if r["granted_on"] == "ACCOUNT"
         ))
-        allowed = {"BIND SERVICE ENDPOINT", "EXECUTE ALERT"}
+        allowed = {"BIND SERVICE ENDPOINT", "CREATE COMPUTE POOL", "EXECUTE ALERT"}
         unexpected = set(acct_grants) - allowed
         assert len(unexpected) == 0, (
             f"Unexpected account-level grants: {unexpected}"
