@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - 'poc/**'
+      - '.github/workflows/test.yml'
   pull_request:
     branches: [main]
     paths:
       - 'poc/**'
+      - '.github/workflows/test.yml'
   workflow_dispatch:
     inputs:
       clouds:
@@ -43,7 +45,7 @@ jobs:
 
       - name: Run detect-secrets
         run: |
-          pip install detect-secrets
+          pip install detect-secrets==1.5.0
           detect-secrets scan --baseline .secrets.baseline
           detect-secrets audit --report .secrets.baseline
 
