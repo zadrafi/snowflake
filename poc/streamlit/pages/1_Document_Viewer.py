@@ -4,6 +4,12 @@ Page 1: Document Viewer — Browse documents, view extracted fields + source PDF
 Dynamically renders fields from raw_extraction VARIANT when available,
 falling back to fixed field_1..field_10 columns for backward compatibility.
 Line items are editable with append-only audit trail via LINE_ITEM_REVIEW.
+
+Viewer modes:
+  - Interactive Overlay: Nanonets-style clickable bounding boxes (HTML/JS)
+  - Image Overlay:       PIL-drawn boxes on rasterized page (fallback)
+  - Snip Annotator:      Draw rectangles to extract text + correct fields
+  - Plain PDF:           Original pypdfium2 rendering with field panel
 """
 
 import json
@@ -12,10 +18,22 @@ import pandas as pd
 import tempfile
 import os
 import pypdfium2 as pdfium
+from field_highlighter import render_field_highlight_viewer
+from snip_annotator import render_snip_mode
+from validate_extraction import validate_extraction, create_annotated_pdf
+import streamlit.components.v1 as components
 from config import (
-    DB, STAGE, get_session, get_doc_type_labels, get_doc_types,
-    get_doc_type_config, get_field_names_from_labels, _parse_variant,
-    inject_custom_css, sidebar_branding,
+    DB,
+    STAGE,
+    get_session,
+    get_doc_type_labels,
+    get_doc_types,
+    get_doc_type_config,
+    get_field_names_from_labels,
+    _parse_variant,
+    inject_custom_css,
+    sidebar_branding,
+    render_nav_bar,
 )
 
 st.set_page_config(page_title="Document Viewer", page_icon="📋", layout="wide")
@@ -30,11 +48,8 @@ if "line_save_result" not in st.session_state:
     st.session_state.line_save_result = None
 
 st.title("Document Viewer")
-st.caption("Browse extracted documents — select any row to view source PDF and extracted fields")
-st.info(
-    "**Note:** Documents are identified by **filename**. "
-    "If the same filename is uploaded again, the existing extraction is overwritten (MERGE). "
-    "Rename the file before uploading if it is a different document."
+st.caption(
+    "Browse extracted documents — select any row to view source PDF and extracted fields"
 )
 
 
@@ -44,7 +59,9 @@ st.info(
 def _label_for_key(key: str, doc_labels: dict) -> str:
     """Look up a display label for a raw_extraction field key."""
     for lbl_key, lbl_val in doc_labels.items():
-        if lbl_val and key.lower().replace("_", " ") == lbl_val.lower().replace("_", " "):
+        if lbl_val and key.lower().replace("_", " ") == lbl_val.lower().replace(
+            "_", " "
+        ):
             return lbl_val
     return key.replace("_", " ").title()
 
@@ -67,6 +84,111 @@ def _render_dynamic_fields(raw: dict, doc_labels: dict):
             label = _label_for_key(key, doc_labels)
             val = raw.get(key)
             st.markdown(f"**{label}:** {val or 'N/A'}")
+
+
+def _render_fixed_fields(inv, doc_labels: dict):
+    """Render the fixed field_1..field_10 columns (backward compat)."""
+    h1, h2 = st.columns(2)
+    with h1:
+        st.markdown(
+            f"**{doc_labels.get('field_1', 'Sender')}:** {inv['FIELD_1'] or 'N/A'}"
+        )
+        st.markdown(
+            f"**{doc_labels.get('field_2', 'Document #')}:** {inv['FIELD_2'] or 'N/A'}"
+        )
+        st.markdown(
+            f"**{doc_labels.get('field_3', 'Reference')}:** {inv['FIELD_3'] or 'N/A'}"
+        )
+        st.markdown(
+            f"**{doc_labels.get('field_7', 'Recipient')}:** {inv['FIELD_7'] or 'N/A'}"
+        )
+    with h2:
+        st.markdown(
+            f"**{doc_labels.get('field_4', 'Date')}:** {inv['FIELD_4'] or 'N/A'}"
+        )
+        st.markdown(
+            f"**{doc_labels.get('field_5', 'Due Date')}:** {inv['FIELD_5'] or 'N/A'}"
+        )
+        st.markdown(
+            f"**{doc_labels.get('field_6', 'Terms')}:** {inv['FIELD_6'] or 'N/A'}"
+        )
+
+    t1, t2, t3 = st.columns(3)
+    subtotal = inv["FIELD_8"] or 0
+    tax = inv["FIELD_9"] or 0
+    total = inv["FIELD_10"] or 0
+    t1.metric(doc_labels.get("field_8", "Subtotal"), f"${subtotal:,.2f}")
+    t2.metric(doc_labels.get("field_9", "Tax"), f"${tax:,.2f}")
+    t3.metric(doc_labels.get("field_10", "Total"), f"${total:,.2f}")
+
+
+def _render_validation_summary(file_name, doc_type, raw_for_validation):
+    """Render validation metrics, failures/warnings expanders, and annotated PDF download."""
+    report = validate_extraction(file_name or "", doc_type, raw_for_validation)
+    st.divider()
+    vc1, vc2, vc3 = st.columns(3)
+    vc1.metric("Fields Passed", f"{report.passed}/{report.total_fields}")
+    vc2.metric("Failures", len(report.failures))
+    vc3.metric("Warnings", len(report.warnings))
+    if report.failures:
+        with st.expander(f"{len(report.failures)} Failure(s)", expanded=False):
+            for f in report.failures:
+                st.error(f)
+    if report.warnings:
+        with st.expander(f"{len(report.warnings)} Warning(s)", expanded=False):
+            for w in report.warnings:
+                st.warning(w)
+    if file_name:
+        try:
+            pdf_bytes = create_annotated_pdf(session, file_name, STAGE, DB)
+            st.download_button(
+                "Download Annotated PDF",
+                pdf_bytes,
+                file_name=f"validated_{file_name}",
+                mime="application/pdf",
+            )
+        except Exception:
+            pass
+
+
+def _render_plain_pdf(file_name):
+    """Render PDF pages using pypdfium2 (no overlays)."""
+    try:
+        stage_files = session.sql(
+            f"SELECT RELATIVE_PATH FROM DIRECTORY(@{STAGE}) WHERE RELATIVE_PATH = '{file_name}'"
+        ).collect()
+        if not stage_files:
+            st.warning(
+                f"File **{file_name}** is not on stage `@{STAGE}`. "
+                "Re-upload it or run `deploy_poc.sh` to sync stage files."
+            )
+            return
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stage_path = f"@{STAGE}/{file_name}"
+            session.file.get(stage_path, tmpdir)
+            local_path = os.path.join(tmpdir, file_name)
+            if not os.path.exists(local_path):
+                base = os.path.basename(file_name)
+                alt_path = os.path.join(tmpdir, base)
+                if os.path.exists(alt_path):
+                    local_path = alt_path
+            if not os.path.exists(local_path):
+                downloaded = os.listdir(tmpdir)
+                if downloaded:
+                    local_path = os.path.join(tmpdir, downloaded[0])
+                else:
+                    raise FileNotFoundError(
+                        f"session.file.get() returned no files for {stage_path}"
+                    )
+            pdf = pdfium.PdfDocument(local_path)
+            for page_idx in range(len(pdf)):
+                page = pdf[page_idx]
+                bitmap = page.render(scale=2)
+                pil_image = bitmap.to_pil()
+                st.image(pil_image, use_container_width=True)
+            pdf.close()
+    except Exception as e:
+        st.warning(f"Could not render document `{file_name}`: {e}")
 
 
 # --- Filters ---
@@ -105,7 +227,9 @@ except Exception as e:
     sender_list = ["ALL"]
 
 with col_f1:
-    selected_sender = st.selectbox(labels.get("sender_label", "Sender / Vendor"), sender_list)
+    selected_sender = st.selectbox(
+        labels.get("sender_label", "Sender / Vendor"), sender_list
+    )
 
 with col_f2:
     selected_status = st.selectbox("Status", ["ALL", "EXTRACTED"])
@@ -206,7 +330,9 @@ if len(ledger_df) > 0:
                     count = int(row["DOCUMENT_COUNT"])
                     amount = row["TOTAL_AMOUNT"]
                     if amount and amount > 0:
-                        st.metric(label=label, value=f"${amount:,.0f}", delta=f"{count} docs")
+                        st.metric(
+                            label=label, value=f"${amount:,.0f}", delta=f"{count} docs"
+                        )
                     else:
                         st.metric(label=label, value=f"{count} docs")
             st.divider()
@@ -220,12 +346,16 @@ if len(ledger_df) > 0:
             "FILE_NAME": None,
             "SENDER": labels.get("sender_label", "Sender"),
             "DOCUMENT_NUMBER": labels.get("reference_label", "Document #"),
-            "DOCUMENT_DATE": st.column_config.DateColumn(labels.get("date_label", "Date")),
+            "DOCUMENT_DATE": st.column_config.DateColumn(
+                labels.get("date_label", "Date")
+            ),
             "DUE_DATE": st.column_config.DateColumn("Due Date"),
             "TERMS": "Terms",
             "SUBTOTAL": st.column_config.NumberColumn("Subtotal", format="$%.2f"),
             "TAX": st.column_config.NumberColumn("Tax", format="$%.2f"),
-            "TOTAL_AMOUNT": st.column_config.NumberColumn(labels.get("amount_label", "Total"), format="$%.2f"),
+            "TOTAL_AMOUNT": st.column_config.NumberColumn(
+                labels.get("amount_label", "Total"), format="$%.2f"
+            ),
             "STATUS": "Status",
         },
         hide_index=True,
@@ -258,96 +388,177 @@ if len(ledger_df) > 0:
             params=[selected_doc, selected_doc],
         ).to_pandas()
 
-        col_pdf, col_fields = st.columns([1, 1])
+        file_name = file_row.iloc[0]["FILE_NAME"] if len(file_row) > 0 else None
 
-        # Left: Source PDF
-        with col_pdf:
-            st.markdown("**Source Document**")
-            if len(file_row) > 0 and file_row.iloc[0]["FILE_NAME"]:
-                file_name = file_row.iloc[0]["FILE_NAME"]
-                try:
-                    stage_files = session.sql(
-                        f"SELECT RELATIVE_PATH FROM DIRECTORY(@{STAGE}) WHERE RELATIVE_PATH = ?",
-                        params=[file_name]
+        # ── Viewer mode selector ──────────────────────────────────────
+        highlight_mode = st.radio(
+            "Viewer Mode",
+            ["Interactive Overlay", "Image Overlay", "Snip Annotator", "Plain PDF"],
+            horizontal=True,
+            key="viewer_mode",
+        )
+
+        if len(file_row) > 0:
+            inv = file_row.iloc[0]
+            doc_type = inv.get("DOC_TYPE", "INVOICE")
+            doc_labels = get_doc_type_labels(session, doc_type)
+            raw = _parse_variant(inv.get("RAW_EXTRACTION")) or {}
+
+            # Overlay any corrections from INVOICE_REVIEW so edits
+            # (including snip annotations) are visible immediately
+            # without waiting for a full page refresh.
+            try:
+                _rid = inv.get("RECORD_ID") or inv.get("record_id")
+                if _rid is not None:
+                    _corr_rows = session.sql(
+                        f"""
+                        SELECT corrections
+                        FROM {DB}.INVOICE_REVIEW
+                        WHERE record_id = ?
+                          AND corrections IS NOT NULL
+                        ORDER BY reviewed_at DESC
+                        LIMIT 1
+                        """,
+                        params=[int(_rid)],
                     ).collect()
-                    if not stage_files:
-                        st.warning(
-                            f"File **{file_name}** is not on stage `@{STAGE}`. "
-                            "Re-upload it or run `deploy_poc.sh` to sync stage files."
+                    if _corr_rows:
+                        _corr = _parse_variant(
+                            _corr_rows[0]["CORRECTIONS"]
+                            if isinstance(_corr_rows[0], dict)
+                            else _corr_rows[0][0]
                         )
-                    else:
-                        with tempfile.TemporaryDirectory() as tmpdir:
-                            stage_path = f"@{STAGE}/{file_name}"
-                            session.file.get(stage_path, tmpdir)
-                            local_path = os.path.join(tmpdir, file_name)
-                            if not os.path.exists(local_path):
-                                base = os.path.basename(file_name)
-                                alt_path = os.path.join(tmpdir, base)
-                                if os.path.exists(alt_path):
-                                    local_path = alt_path
-                            if not os.path.exists(local_path):
-                                downloaded = os.listdir(tmpdir)
-                                if downloaded:
-                                    local_path = os.path.join(tmpdir, downloaded[0])
-                                else:
-                                    raise FileNotFoundError(
-                                        f"session.file.get() returned no files for {stage_path}"
-                                    )
-                            pdf = pdfium.PdfDocument(local_path)
-                            for page_idx in range(len(pdf)):
-                                page = pdf[page_idx]
-                                bitmap = page.render(scale=2)
-                                pil_image = bitmap.to_pil()
-                                st.image(pil_image, use_container_width=True)
-                            pdf.close()
+                        if _corr:
+                            raw = {**raw, **_corr}
+            except Exception:
+                pass  # Non-fatal — show original values if query fails
+
+            # Field selector (shared across overlay modes — not used in Snip or Plain)
+            skip = {"_confidence", "_validation_warnings"}
+            field_names = [k for k in raw if k not in skip]
+            sel_field = None
+            if highlight_mode in ("Interactive Overlay", "Image Overlay") and field_names:
+                highlight_choice = st.selectbox(
+                    "Highlight field",
+                    ["ALL (show all fields)"] + field_names,
+                    key="highlight_field_select",
+                )
+                sel_field = (
+                    None if highlight_choice.startswith("ALL") else highlight_choice
+                )
+
+            # ══════════════════════════════════════════════════════════
+            # MODE 1: Interactive HTML/JS Overlay (Nanonets-style)
+            # ══════════════════════════════════════════════════════════
+            if highlight_mode == "Interactive Overlay" and raw and file_name:
+                try:
+                    render_field_highlight_viewer(
+                        session=session,
+                        file_name=file_name,
+                        stage=STAGE,
+                        db=DB,
+                        raw_extraction=raw,
+                        doc_type=doc_type,
+                        mode="interactive",
+                        selected_field=sel_field,
+                        viewer_height=850,
+                    )
                 except Exception as e:
-                    st.warning(f"Could not render document `{file_name}`: {e}")
+                    st.error(f"Interactive viewer error: {e}")
+                    st.info("Falling back to image overlay...")
+                    render_field_highlight_viewer(
+                        session=session,
+                        file_name=file_name,
+                        stage=STAGE,
+                        db=DB,
+                        raw_extraction=raw,
+                        doc_type=doc_type,
+                        mode="image",
+                        selected_field=sel_field,
+                    )
+
+            # ══════════════════════════════════════════════════════════
+            # MODE 2: PIL Image Overlay (fallback)
+            # ══════════════════════════════════════════════════════════
+            elif highlight_mode == "Image Overlay" and raw and file_name:
+                col_pdf, col_fields = st.columns([1, 1])
+                with col_pdf:
+                    render_field_highlight_viewer(
+                        session=session,
+                        file_name=file_name,
+                        stage=STAGE,
+                        db=DB,
+                        raw_extraction=raw,
+                        doc_type=doc_type,
+                        mode="image",
+                        selected_field=sel_field,
+                    )
+                with col_fields:
+                    st.markdown("**Extracted Fields**")
+                    if raw and len(raw) > 10:
+                        _render_dynamic_fields(raw, doc_labels)
+                    else:
+                        _render_fixed_fields(inv, doc_labels)
+
+                    raw_for_val = _parse_variant(inv.get("RAW_EXTRACTION")) or {}
+                    if raw_for_val:
+                        _render_validation_summary(file_name, doc_type, raw_for_val)
+
+            # ══════════════════════════════════════════════════════════
+            # MODE 3: Snip Annotator (draw-to-correct)
+            # ══════════════════════════════════════════════════════════
+            elif highlight_mode == "Snip Annotator" and file_name:
+                _rid = inv.get("RECORD_ID") or inv.get("record_id")
+                render_snip_mode(
+                    session=session,
+                    file_name=file_name,
+                    stage=STAGE,
+                    db=DB,
+                    raw_extraction=raw,
+                    doc_type=doc_type,
+                    record_id=int(_rid) if _rid is not None else None,
+                )
+
+            # ══════════════════════════════════════════════════════════
+            # MODE 4: Plain PDF (original behavior, no overlays)
+            # ══════════════════════════════════════════════════════════
             else:
-                st.info("No source file available.")
+                col_pdf, col_fields = st.columns([1, 1])
 
-        # Right: Extracted fields + line items
-        with col_fields:
-            st.markdown("**Extracted Fields**")
-            if len(file_row) > 0:
-                inv = file_row.iloc[0]
-                doc_type = inv.get("DOC_TYPE", "INVOICE")
-                doc_labels = get_doc_type_labels(session, doc_type)
+                with col_pdf:
+                    if file_name:
+                        _render_plain_pdf(file_name)
+                    else:
+                        st.info("No source file available.")
 
-                # Try to use raw_extraction VARIANT for dynamic fields
-                raw = _parse_variant(inv.get("RAW_EXTRACTION")) or {}
+                with col_fields:
+                    st.markdown("**Extracted Fields**")
+                    if raw and len(raw) > 10:
+                        _render_dynamic_fields(raw, doc_labels)
+                    else:
+                        _render_fixed_fields(inv, doc_labels)
 
-                if raw and len(raw) > 10:
-                    # Dynamic rendering: raw_extraction has more fields than fixed columns
-                    _render_dynamic_fields(raw, doc_labels)
-                else:
-                    # Fallback: render fixed columns (backward compat)
-                    h1, h2 = st.columns(2)
-                    with h1:
-                        st.markdown(f"**{doc_labels.get('field_1', 'Sender')}:** {inv['FIELD_1'] or 'N/A'}")
-                        st.markdown(f"**{doc_labels.get('field_2', 'Document #')}:** {inv['FIELD_2'] or 'N/A'}")
-                        st.markdown(f"**{doc_labels.get('field_3', 'Reference')}:** {inv['FIELD_3'] or 'N/A'}")
-                        st.markdown(f"**{doc_labels.get('field_7', 'Recipient')}:** {inv['FIELD_7'] or 'N/A'}")
-                    with h2:
-                        st.markdown(f"**{doc_labels.get('field_4', 'Date')}:** {inv['FIELD_4'] or 'N/A'}")
-                        st.markdown(f"**{doc_labels.get('field_5', 'Due Date')}:** {inv['FIELD_5'] or 'N/A'}")
-                        st.markdown(f"**{doc_labels.get('field_6', 'Terms')}:** {inv['FIELD_6'] or 'N/A'}")
+                    raw_for_val = _parse_variant(inv.get("RAW_EXTRACTION")) or {}
+                    if raw_for_val:
+                        _render_validation_summary(file_name, doc_type, raw_for_val)
 
-                    t1, t2, t3 = st.columns(3)
-                    subtotal = inv["FIELD_8"] or 0
-                    tax = inv["FIELD_9"] or 0
-                    total = inv["FIELD_10"] or 0
-                    t1.metric(doc_labels.get("field_8", "Subtotal"), f"${subtotal:,.2f}")
-                    t2.metric(doc_labels.get("field_9", "Tax"), f"${tax:,.2f}")
-                    t3.metric(doc_labels.get("field_10", "Total"), f"${total:,.2f}")
-
+        # ══════════════════════════════════════════════════════════════
+        # Line Items (unchanged — shared across all viewer modes)
+        # ══════════════════════════════════════════════════════════════
         st.divider()
         st.markdown("**Extracted Line Items**")
 
-        file_name_for_lines = str(file_row.iloc[0]["FILE_NAME"]) if len(file_row) > 0 else ""
+        file_name_for_lines = (
+            str(file_row.iloc[0]["FILE_NAME"]) if len(file_row) > 0 else ""
+        )
 
-        if st.session_state.line_save_result and st.session_state.line_save_result.get("file") == file_name_for_lines:
+        if (
+            st.session_state.line_save_result
+            and st.session_state.line_save_result.get("file") == file_name_for_lines
+        ):
             result = st.session_state.line_save_result
-            st.success(f"Saved {result['count']} line item correction(s) — audit rows appended to LINE_ITEM_REVIEW")
+            st.success(
+                f"Saved {result['count']} line item correction(s) — audit rows appended to LINE_ITEM_REVIEW"
+            )
             if st.button("Continue Editing"):
                 st.session_state.line_save_result = None
                 st.rerun()
@@ -375,7 +586,10 @@ if len(ledger_df) > 0:
 
         if len(line_items) > 0:
             line_filter_key = f"lines|{file_name_for_lines}"
-            if "line_orig_key" not in st.session_state or st.session_state.line_orig_key != line_filter_key:
+            if (
+                "line_orig_key" not in st.session_state
+                or st.session_state.line_orig_key != line_filter_key
+            ):
                 st.session_state.line_orig_snapshot = line_items.copy()
                 st.session_state.line_orig_key = line_filter_key
             line_orig = st.session_state.line_orig_snapshot
@@ -388,8 +602,12 @@ if len(ledger_df) > 0:
                     "DESCRIPTION": st.column_config.TextColumn("Description"),
                     "CATEGORY": st.column_config.TextColumn("Category"),
                     "QUANTITY": st.column_config.NumberColumn("Qty", format="%.0f"),
-                    "UNIT_PRICE": st.column_config.NumberColumn("Unit Price", format="$%.2f"),
-                    "LINE_TOTAL": st.column_config.NumberColumn("Total", format="$%.2f"),
+                    "UNIT_PRICE": st.column_config.NumberColumn(
+                        "Unit Price", format="$%.2f"
+                    ),
+                    "LINE_TOTAL": st.column_config.NumberColumn(
+                        "Total", format="$%.2f"
+                    ),
                 },
                 hide_index=True,
                 use_container_width=True,
@@ -413,11 +631,23 @@ if len(ledger_df) > 0:
                 orig = line_orig.iloc[idx]
                 edit = edited_lines.iloc[idx]
                 row_diffs = {}
-                for col in ["DESCRIPTION", "CATEGORY", "QUANTITY", "UNIT_PRICE", "LINE_TOTAL"]:
+                for col in [
+                    "DESCRIPTION",
+                    "CATEGORY",
+                    "QUANTITY",
+                    "UNIT_PRICE",
+                    "LINE_TOTAL",
+                ]:
                     if _lnorm(orig.get(col)) != _lnorm(edit.get(col)):
                         row_diffs[col] = (_lnorm(orig.get(col)), _lnorm(edit.get(col)))
                 if row_diffs:
-                    line_changes.append({"idx": idx, "line_id": int(edit["LINE_ID"]), "diffs": row_diffs})
+                    line_changes.append(
+                        {
+                            "idx": idx,
+                            "line_id": int(edit["LINE_ID"]),
+                            "diffs": row_diffs,
+                        }
+                    )
 
             st.divider()
 
@@ -428,15 +658,23 @@ if len(ledger_df) > 0:
                 for ch in line_changes:
                     for col, (was, now) in ch["diffs"].items():
                         ln_val = edited_lines.iloc[ch["idx"]]["LINE_NUMBER"]
-                        change_rows.append({
-                            "Line #": int(ln_val) if pd.notna(ln_val) else ch["idx"] + 1,
-                            "Field": col.replace("_", " ").title(),
-                            "Was": was if was else "(empty)",
-                            "Now": now if now else "(empty)",
-                        })
-                st.dataframe(pd.DataFrame(change_rows), hide_index=True, use_container_width=True)
+                        change_rows.append(
+                            {
+                                "Line #": (
+                                    int(ln_val) if pd.notna(ln_val) else ch["idx"] + 1
+                                ),
+                                "Field": col.replace("_", " ").title(),
+                                "Was": was if was else "(empty)",
+                                "Now": now if now else "(empty)",
+                            }
+                        )
+                st.dataframe(
+                    pd.DataFrame(change_rows), hide_index=True, use_container_width=True
+                )
 
-                if st.button(f"Save {len(line_changes)} Line Item Change(s)", type="primary"):
+                if st.button(
+                    f"Save {len(line_changes)} Line Item Change(s)", type="primary"
+                ):
                     import numpy as np
 
                     def _to_native(v):
@@ -481,18 +719,32 @@ if len(ledger_df) > 0:
                     validation_errors = []
                     for ch in line_changes:
                         row = edited_lines.iloc[ch["idx"]]
-                        ln = int(row["LINE_NUMBER"]) if pd.notna(row["LINE_NUMBER"]) else ch["idx"] + 1
+                        ln = (
+                            int(row["LINE_NUMBER"])
+                            if pd.notna(row["LINE_NUMBER"])
+                            else ch["idx"] + 1
+                        )
                         for col in ["QUANTITY", "UNIT_PRICE", "LINE_TOTAL"]:
                             raw_val = row.get(col)
-                            if raw_val is not None and not (isinstance(raw_val, float) and pd.isna(raw_val)):
+                            if raw_val is not None and not (
+                                isinstance(raw_val, float) and pd.isna(raw_val)
+                            ):
                                 try:
                                     f = float(raw_val)
                                     if col == "QUANTITY" and f < 0:
-                                        validation_errors.append(f"Line #{ln} — Quantity: negative value ({f})")
-                                    if col in ("UNIT_PRICE", "LINE_TOTAL") and (f > 9999999999.99 or f < -9999999999.99):
-                                        validation_errors.append(f"Line #{ln} — {col.replace('_', ' ').title()}: value {f} exceeds allowed range (±9,999,999,999.99)")
+                                        validation_errors.append(
+                                            f"Line #{ln} — Quantity: negative value ({f})"
+                                        )
+                                    if col in ("UNIT_PRICE", "LINE_TOTAL") and (
+                                        f > 9999999999.99 or f < -9999999999.99
+                                    ):
+                                        validation_errors.append(
+                                            f"Line #{ln} — {col.replace('_', ' ').title()}: value {f} exceeds allowed range (±9,999,999,999.99)"
+                                        )
                                 except (ValueError, TypeError):
-                                    validation_errors.append(f"Line #{ln} — {col.replace('_', ' ').title()}: '{raw_val}' is not a valid number")
+                                    validation_errors.append(
+                                        f"Line #{ln} — {col.replace('_', ' ').title()}: '{raw_val}' is not a valid number"
+                                    )
 
                     if validation_errors:
                         st.error("**Validation failed — changes not saved:**")
@@ -503,7 +755,11 @@ if len(ledger_df) > 0:
                     saved = 0
                     for ch in line_changes:
                         row = edited_lines.iloc[ch["idx"]]
-                        line_id = int(row["LINE_ID"]) if pd.notna(row["LINE_ID"]) else ch["idx"] + 1
+                        line_id = (
+                            int(row["LINE_ID"])
+                            if pd.notna(row["LINE_ID"])
+                            else ch["idx"] + 1
+                        )
                         record_id = str(file_row.iloc[0].get("RECORD_ID", "")) or None
                         corrections_dict = {}
                         for disp_col, ext_col in COL_MAP.items():
@@ -528,23 +784,29 @@ if len(ledger_df) > 0:
                                     ?, ?, ?, ?, ?,
                                     PARSE_JSON(?)
                                 """,
-                                params=[_to_native(p) for p in [
-                                    int(line_id),
-                                    str(file_name_for_lines),
-                                    record_id,
-                                    _safe_str(row.get("DESCRIPTION")),
-                                    _safe_str(row.get("CATEGORY")),
-                                    _safe_num(row.get("QUANTITY")),
-                                    _safe_num(row.get("UNIT_PRICE")),
-                                    _safe_num(row.get("LINE_TOTAL")),
-                                    json.dumps(corrections_dict),
-                                ]],
+                                params=[
+                                    _to_native(p)
+                                    for p in [
+                                        int(line_id),
+                                        str(file_name_for_lines),
+                                        record_id,
+                                        _safe_str(row.get("DESCRIPTION")),
+                                        _safe_str(row.get("CATEGORY")),
+                                        _safe_num(row.get("QUANTITY")),
+                                        _safe_num(row.get("UNIT_PRICE")),
+                                        _safe_num(row.get("LINE_TOTAL")),
+                                        json.dumps(corrections_dict),
+                                    ]
+                                ],
                             ).collect()
                             saved += 1
                         except Exception as e:
                             st.error(f"Could not save line item #{line_id}: {e}")
 
-                    st.session_state.line_save_result = {"count": saved, "file": file_name_for_lines}
+                    st.session_state.line_save_result = {
+                        "count": saved,
+                        "file": file_name_for_lines,
+                    }
                     st.session_state.line_orig_key = None
                     st.rerun()
             else:
@@ -554,3 +816,5 @@ if len(ledger_df) > 0:
 else:
     st.info("No documents match the selected filters.")
 
+
+render_nav_bar()

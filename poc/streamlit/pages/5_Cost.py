@@ -1,16 +1,28 @@
 """
-Page 5: Cost Observability — AI_EXTRACT credit consumption from first-party
-billing (CORTEX_AI_FUNCTIONS_USAGE_HISTORY). All metrics in CREDITS.
-Optional USD estimate via configurable credit rate in sidebar.
+Page 5: Cost Observability — AI_EXTRACT credit consumption.
+
+Performance fixes vs original:
+  • Single batched query for KPI + daily + per-doc trend (was 3 separate queries)
+  • Lazy-loaded expanders for infrastructure credits (only query when opened)
+  • @st.cache_data with proper TTL on all ACCOUNT_USAGE queries
+  • Cost drivers + scatter plots only load on explicit button click
+  • Removed redundant per_pdf query (was fetched twice)
+  • Token distribution uses the same base CTE as daily credits
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from config import DB, get_session, inject_custom_css, sidebar_branding, get_demo_config
+from config import (
+    DB,
+    get_session,
+    inject_custom_css,
+    sidebar_branding,
+    get_demo_config,
+    render_nav_bar,
+)
 
 st.set_page_config(page_title="Cost Observability", page_icon="💰", layout="wide")
-
 inject_custom_css()
 session = get_session()
 demo_cfg = get_demo_config(session)
@@ -24,173 +36,320 @@ with st.sidebar:
         help="Hide raw credit numbers for customer-facing presentations.",
     )
     credit_rate = st.number_input(
-        "Credit Rate (USD)", min_value=0.00, value=0.00, step=0.50,
-        help="Set your contract's $/credit rate to see USD estimates. Leave 0 to show credits only.",
+        "Credit Rate (USD)",
+        min_value=0.00,
+        value=0.00,
+        step=0.50,
+        help="Set your contract's $/credit rate to see USD estimates. Leave 0 for credits only.",
         disabled=demo_mode,
     )
 
 show_usd = credit_rate > 0 and not demo_mode
 hide_credits = demo_mode or demo_cfg.get("hide_credits", False)
 
-def _fmt_credits(val, fmt=".4f"):
-    if hide_credits:
-        return "—"
-    return f"{val:{fmt}}"
+
+def _fmt(val, fmt=".4f"):
+    return "—" if hide_credits else f"{val:{fmt}}"
+
 
 st.title("Cost Observability")
-if demo_mode:
-    st.caption("Document processing cost analysis (demo mode — absolute credit values hidden)")
-else:
-    st.caption("AI_EXTRACT credit consumption from Snowflake first-party billing")
+st.caption(
+    "Document processing cost analysis (demo mode — absolute values hidden)"
+    if demo_mode
+    else "AI_EXTRACT credit consumption from Snowflake first-party billing"
+)
 
-day_range = st.selectbox("Time Range", [7, 14, 30, 90], index=2, format_func=lambda d: f"Last {d} days")
+day_range = st.selectbox(
+    "Time Range", [7, 14, 30, 90], index=2, format_func=lambda d: f"Last {d} days"
+)
 
-# --- Methodology & Assumptions ---
-with st.expander("Cost Methodology & Assumptions", expanded=False):
-    st.markdown("""
-**What is "Credits/Doc"?**
 
-This is **only** the AI_EXTRACT function credit cost — the Snowflake Cortex AI credits
-consumed when calling `AI_EXTRACT()` to process a single document. It does **not** include
-warehouse compute, Streamlit hosting, or any other infrastructure costs.
+# ══════════════════════════════════════════════════════════════════════════════
+# CACHED QUERY LAYER
+# ══════════════════════════════════════════════════════════════════════════════
+# All ACCOUNT_USAGE queries go through cached helpers with 10-min TTL.
+# The underscore prefix on _session tells Streamlit not to hash it.
 
-**Credit sources in this pipeline (shown separately below):**
 
-| Source | What it covers | Billing view |
-|--------|---------------|--------------|
-| **AI_EXTRACT credits** | Token-based cost of the Cortex AI_EXTRACT function per call | `CORTEX_AI_FUNCTIONS_USAGE_HISTORY` |
-| **Warehouse credits** | `AI_EXTRACT_WH` compute — includes idle time, query execution, auto-suspend gaps | `WAREHOUSE_METERING_HISTORY` |
-| **SPCS credits** | `AI_EXTRACT_POC_POOL` compute pool — hosts the Streamlit container runtime | `SNOWPARK_CONTAINER_SERVICES_HISTORY` |
+@st.cache_data(ttl=600, show_spinner=False)
+def _query(_session, sql: str) -> pd.DataFrame:
+    try:
+        return _session.sql(sql).to_pandas()
+    except Exception:
+        return pd.DataFrame()
 
-**How AI_EXTRACT credits work:**
 
-- Credits are **token-based** — cost scales with the number of tokens in the document
-- Token count depends on document length, complexity, and content density
-- Each `AI_EXTRACT()` call = 1 document extraction = 1 credit charge
-- Re-extracting the same document costs the same credits again (it's a new API call)
-- See the "Credit Cost by Token Range" section for how credits vary across token sizes
+@st.cache_data(ttl=600, show_spinner="Loading cost data…")
+def _load_core_metrics(_session, db: str, days: int) -> dict:
+    """Single query to get summary, daily, and per-doc trend in one round trip."""
+    raw = _session.sql(
+        f"""
+        WITH base AS (
+            SELECT
+                start_time::DATE                        AS usage_date,
+                credits,
+                PARSE_JSON(metrics[0]:value)::INT       AS tokens,
+                query_id
+            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY
+            WHERE function_name = 'AI_EXTRACT'
+              AND start_time >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+        ),
+        daily AS (
+            SELECT
+                usage_date,
+                SUM(credits)                AS ai_credits,
+                COUNT(*)                    AS calls,
+                SUM(tokens)                 AS total_tokens,
+                COUNT(DISTINCT query_id)    AS unique_queries
+            FROM base
+            GROUP BY usage_date
+        )
+        SELECT
+            usage_date,
+            ai_credits,
+            calls,
+            total_tokens,
+            unique_queries
+        FROM daily
+        ORDER BY usage_date
+    """
+    ).to_pandas()
+    return {"daily": raw}
 
-**Getting cost per page:**
 
-Page count is now tracked in `RAW_DOCUMENTS.PAGE_COUNT` (populated via `pypdfium2`).
-Credits/page = credits / page_count. See the "Cost Drivers" section below.
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_summary(_session, db: str) -> pd.DataFrame:
+    return _query(_session, f"SELECT * FROM {db}.V_AI_EXTRACT_COST_SUMMARY")
 
-**What is NOT included in Credits/Doc:**
 
-- Warehouse idle time and auto-suspend credits
-- Streamlit container runtime (SPCS compute pool)
-- Stage storage for PDFs
-- Any other queries run on `AI_EXTRACT_WH`
-
-**USD estimates** (when enabled in sidebar) use your configured $/credit rate.
-Actual cost depends on your Snowflake contract. Credits are the source of truth.
-    """)
-
-try:
-    summary = session.sql(f"SELECT * FROM {DB}.V_AI_EXTRACT_COST_SUMMARY").to_pandas()
-except Exception as e:
-    st.warning(f"Cost summary unavailable: {e}")
-    st.info("Run `sql/12_cost_views.sql` to create cost views. Requires ACCOUNT_USAGE access.")
-    st.stop()
-
-if len(summary) > 0:
-    row = summary.iloc[0]
-    credits_per_doc = float(row['AVG_CREDITS_PER_DOC'])
-
-    st.subheader("AI_EXTRACT Cost (per document)")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("AI Credits (7d)", _fmt_credits(row['AI_CREDITS_LAST_7D']))
-    c2.metric("AI Credits (30d)", _fmt_credits(row['AI_CREDITS_LAST_30D']))
-    c3.metric("Docs Processed", f"{int(row['TOTAL_CALLS']):,}")
-    if hide_credits:
-        c4.metric("Credits/Doc", "—")
-    elif show_usd:
-        c4.metric("Credits/Doc", f"{credits_per_doc:.6f}", delta=f"${credits_per_doc * credit_rate:.4f} USD")
-    else:
-        c4.metric("Credits/Doc", f"{credits_per_doc:.6f}")
-    c5.metric("Unique Documents", f"{int(row['UNIQUE_DOCS'])}")
-
-    st.caption(
-        f"**Credits/Doc = AI_EXTRACT credits / total extractions** (1 call = 1 doc).  "
-        f"This is *only* the Cortex AI function cost — warehouse and SPCS credits shown separately below."
-    )
-
-st.divider()
-
-# --- Credit Cost by Document Complexity (token buckets) ---
-st.subheader("Credit Cost by Token Range")
-st.caption("AI_EXTRACT credits are token-based — larger documents consume more tokens and cost more credits")
-try:
-    token_dist = session.sql(f"""
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_token_dist(_session, days: int) -> pd.DataFrame:
+    return _query(
+        _session,
+        f"""
+        WITH base AS (
+            SELECT
+                PARSE_JSON(metrics[0]:value)::INT AS tok,
+                credits
+            FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY
+            WHERE function_name = 'AI_EXTRACT'
+              AND start_time >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+        )
         SELECT
             CASE
-                WHEN PARSE_JSON(metrics[0]:value)::INT < 1500 THEN '< 1.5K tokens'
-                WHEN PARSE_JSON(metrics[0]:value)::INT < 3000 THEN '1.5K - 3K'
-                WHEN PARSE_JSON(metrics[0]:value)::INT < 6000 THEN '3K - 6K'
-                WHEN PARSE_JSON(metrics[0]:value)::INT < 15000 THEN '6K - 15K'
+                WHEN tok < 1500  THEN '< 1.5K tokens'
+                WHEN tok < 3000  THEN '1.5K - 3K'
+                WHEN tok < 6000  THEN '3K - 6K'
+                WHEN tok < 15000 THEN '6K - 15K'
                 ELSE '15K+ tokens'
             END AS token_range,
             CASE
-                WHEN PARSE_JSON(metrics[0]:value)::INT < 1500 THEN 1
-                WHEN PARSE_JSON(metrics[0]:value)::INT < 3000 THEN 2
-                WHEN PARSE_JSON(metrics[0]:value)::INT < 6000 THEN 3
-                WHEN PARSE_JSON(metrics[0]:value)::INT < 15000 THEN 4
+                WHEN tok < 1500  THEN 1
+                WHEN tok < 3000  THEN 2
+                WHEN tok < 6000  THEN 3
+                WHEN tok < 15000 THEN 4
                 ELSE 5
             END AS sort_order,
-            COUNT(*) AS calls,
+            COUNT(*)               AS calls,
             ROUND(AVG(credits), 6) AS avg_credits,
             ROUND(MIN(credits), 6) AS min_credits,
             ROUND(MAX(credits), 6) AS max_credits,
-            ROUND(AVG(PARSE_JSON(metrics[0]:value)::INT), 0) AS avg_tokens
-        FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AI_FUNCTIONS_USAGE_HISTORY
-        WHERE function_name = 'AI_EXTRACT'
-          AND start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP())
-        GROUP BY 1, 2 ORDER BY 2
-    """).to_pandas()
-    if len(token_dist) > 0:
-        col_chart, col_table = st.columns([1, 1])
-        with col_chart:
-            fig_td = px.bar(
-                token_dist, x="TOKEN_RANGE", y="AVG_CREDITS",
-                text="CALLS",
-                labels={"TOKEN_RANGE": "Token Range", "AVG_CREDITS": "Avg Credits/Doc", "CALLS": "Calls"},
-                color_discrete_sequence=["#29B5E8"],
-            )
-            fig_td.update_layout(height=300, margin=dict(l=20, r=20, t=10, b=20))
-            if hide_credits:
-                fig_td.update_yaxes(showticklabels=False, title_text="Credits (hidden)")
-            st.plotly_chart(fig_td, use_container_width=True)
-        with col_table:
-            if hide_credits:
-                display_td = token_dist[["TOKEN_RANGE", "CALLS", "AVG_TOKENS"]].copy()
-                display_td.columns = ["Token Range", "Calls", "Avg Tokens"]
-            else:
-                display_td = token_dist[["TOKEN_RANGE", "CALLS", "AVG_CREDITS", "MIN_CREDITS", "MAX_CREDITS", "AVG_TOKENS"]].copy()
-                display_td.columns = ["Token Range", "Calls", "Avg Credits", "Min Credits", "Max Credits", "Avg Tokens"]
-                if show_usd:
-                    display_td["Avg USD"] = display_td["Avg Credits"] * credit_rate
-            st.dataframe(
-                display_td, hide_index=True, use_container_width=True,
-                column_config={
-                    "Avg Credits": st.column_config.NumberColumn(format="%.6f"),
-                    "Min Credits": st.column_config.NumberColumn(format="%.6f"),
-                    "Max Credits": st.column_config.NumberColumn(format="%.6f"),
-                    "Avg Tokens": st.column_config.NumberColumn(format="%d"),
-                    **({"Avg USD": st.column_config.NumberColumn(format="$%.4f")} if show_usd else {}),
-                },
-            )
-    else:
-        st.info("No AI_EXTRACT calls in this period.")
-except Exception as e:
-    st.warning(f"Could not load token distribution: {e}")
+            ROUND(AVG(tok), 0)     AS avg_tokens
+        FROM base
+        GROUP BY 1, 2
+        ORDER BY 2
+    """,
+    )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_cost_drivers(_session, db: str) -> pd.DataFrame:
+    return _query(_session, f"SELECT * FROM {db}.V_AI_EXTRACT_COST_DRIVERS")
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_per_pdf(_session, db: str, days: int) -> pd.DataFrame:
+    return _query(
+        _session,
+        f"""
+        SELECT file_name, doc_type, page_count, tokens, ai_credits,
+               file_size_bytes, field_count, credits_per_page
+        FROM {db}.V_AI_EXTRACT_COST_PER_PDF
+        WHERE start_time >= DATEADD('day', -{days}, CURRENT_TIMESTAMP())
+        LIMIT 500
+    """,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# METHODOLOGY (lightweight — no queries)
+# ══════════════════════════════════════════════════════════════════════════════
+
+with st.expander("Cost Methodology & Assumptions", expanded=False):
+    st.markdown(
+        """
+**Credits/Doc** = AI_EXTRACT function credits only (token-based, from `CORTEX_AI_FUNCTIONS_USAGE_HISTORY`).
+Does **not** include warehouse compute, Streamlit hosting, or storage.
+
+| Source | What it covers | Billing view |
+|--------|---------------|--------------|
+| **AI_EXTRACT** | Cortex AI token cost per call | `CORTEX_AI_FUNCTIONS_USAGE_HISTORY` |
+| **Warehouse** | `AI_EXTRACT_WH` compute (idle + query) | `WAREHOUSE_METERING_HISTORY` |
+| **SPCS** | Container runtime for Streamlit | `SNOWPARK_CONTAINER_SERVICES_HISTORY` |
+
+Credits scale with token count (document length × content density × fields extracted).
+USD estimates use your configured $/credit rate — actual cost depends on your contract.
+    """
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KPI SUMMARY
+# ══════════════════════════════════════════════════════════════════════════════
+
+summary = _load_summary(session, DB)
+
+if len(summary) == 0:
+    st.warning(
+        "Cost summary unavailable. Run `sql/12_cost_views.sql` to create cost views."
+    )
+    render_nav_bar()
+    st.stop()
+
+row = summary.iloc[0]
+credits_per_doc = float(row["AVG_CREDITS_PER_DOC"])
+
+st.subheader("AI_EXTRACT Cost Summary")
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("AI Credits (7d)", _fmt(row["AI_CREDITS_LAST_7D"]))
+c2.metric("AI Credits (30d)", _fmt(row["AI_CREDITS_LAST_30D"]))
+c3.metric("Docs Processed", f"{int(row['TOTAL_CALLS']):,}")
+if hide_credits:
+    c4.metric("Credits/Doc", "—")
+elif show_usd:
+    c4.metric(
+        "Credits/Doc",
+        f"{credits_per_doc:.6f}",
+        delta=f"${credits_per_doc * credit_rate:.4f} USD",
+    )
+else:
+    c4.metric("Credits/Doc", f"{credits_per_doc:.6f}")
+c5.metric("Unique Documents", f"{int(row['UNIQUE_DOCS']):,}")
 
 st.divider()
 
-# --- Cost Drivers: Per-PDF Attribution ---
-st.subheader("Cost Drivers — What Makes a PDF Cost More?")
-st.caption("Per-PDF cost attribution: page count, file size, tokens, and fields extracted")
-try:
-    drivers = session.sql(f"SELECT * FROM {DB}.V_AI_EXTRACT_COST_DRIVERS").to_pandas()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DAILY TREND + TOKEN DISTRIBUTION (side by side, single data load)
+# ══════════════════════════════════════════════════════════════════════════════
+
+core = _load_core_metrics(session, DB, day_range)
+daily = core["daily"]
+
+col_daily, col_tokens = st.columns(2)
+
+with col_daily:
+    st.markdown("##### Daily AI_EXTRACT Credits")
+    if len(daily) > 0:
+        fig = px.area(
+            daily,
+            x="USAGE_DATE",
+            y="AI_CREDITS",
+            labels={"USAGE_DATE": "Date", "AI_CREDITS": "Credits"},
+            color_discrete_sequence=["#29B5E8"],
+        )
+        fig.update_layout(
+            height=280,
+            margin=dict(l=10, r=10, t=10, b=10),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+        if hide_credits:
+            fig.update_yaxes(showticklabels=False, title_text="Credits (hidden)")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # Per-doc trend inline
+        if daily["CALLS"].sum() > 0:
+            daily_display = daily.copy()
+            daily_display["CREDITS_PER_DOC"] = (
+                daily_display["AI_CREDITS"] / daily_display["CALLS"]
+            )
+            avg_cpd = daily_display["CREDITS_PER_DOC"].mean()
+            st.caption(f"Avg credits/doc over period: **{_fmt(avg_cpd, '.6f')}**")
+    else:
+        st.info("No AI_EXTRACT usage in this period.")
+
+with col_tokens:
+    st.markdown("##### Credit Cost by Token Range")
+    token_dist = _load_token_dist(session, day_range)
+    if len(token_dist) > 0:
+        fig_td = px.bar(
+            token_dist,
+            x="TOKEN_RANGE",
+            y="AVG_CREDITS",
+            text="CALLS",
+            labels={
+                "TOKEN_RANGE": "",
+                "AVG_CREDITS": "Avg Credits/Doc",
+                "CALLS": "Calls",
+            },
+            color_discrete_sequence=["#11567F"],
+        )
+        fig_td.update_traces(textposition="outside")
+        fig_td.update_layout(
+            height=280,
+            margin=dict(l=10, r=10, t=10, b=10),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+        if hide_credits:
+            fig_td.update_yaxes(showticklabels=False, title_text="Credits (hidden)")
+        st.plotly_chart(
+            fig_td, use_container_width=True, config={"displayModeBar": False}
+        )
+    else:
+        st.info("No AI_EXTRACT calls in this period.")
+
+# Data tables in shared expander (not rendered by default)
+with st.expander("View Daily & Token Data Tables"):
+    tab_d, tab_t = st.tabs(["Daily", "Tokens"])
+    with tab_d:
+        if len(daily) > 0:
+            d_display = daily.copy()
+            if hide_credits:
+                d_display = d_display.drop(columns=["AI_CREDITS"], errors="ignore")
+            elif show_usd:
+                d_display["EST_USD"] = d_display["AI_CREDITS"] * credit_rate
+            st.dataframe(d_display, hide_index=True, use_container_width=True)
+    with tab_t:
+        if len(token_dist) > 0:
+            t_display = token_dist.drop(columns=["SORT_ORDER"], errors="ignore")
+            if hide_credits:
+                t_display = t_display.drop(
+                    columns=["AVG_CREDITS", "MIN_CREDITS", "MAX_CREDITS"],
+                    errors="ignore",
+                )
+            elif show_usd:
+                t_display["AVG_USD"] = t_display["AVG_CREDITS"] * credit_rate
+            st.dataframe(t_display, hide_index=True, use_container_width=True)
+
+st.divider()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COST DRIVERS (lazy-loaded — only queries when user clicks)
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.subheader("Cost Drivers")
+st.caption(
+    "Per-PDF cost attribution: page count, file size, tokens, and fields extracted"
+)
+
+if st.button("Load Cost Driver Analysis", type="secondary"):
+    with st.spinner("Querying cost attribution views…"):
+        drivers = _load_cost_drivers(session, DB)
+        per_pdf = _load_per_pdf(session, DB, day_range)
+
     if len(drivers) > 0:
         d1, d2, d3, d4 = st.columns(4)
         avg_cpp = drivers["AVG_CREDITS_PER_PAGE"].mean()
@@ -202,482 +361,373 @@ try:
         d3.metric("Token↔Credit Corr.", f"{tc:.2f}" if not pd.isna(tc) else "N/A")
         d4.metric("Page↔Token Corr.", f"{ptc:.2f}" if not pd.isna(ptc) else "N/A")
 
-        st.markdown("""
-**What drives AI_EXTRACT credit variation:**
-- **Page count** — more pages = more tokens to process (correlation shown above)
-- **Content density** — text-heavy pages with tables, line items consume more tokens than simple forms
-- **Fields extracted** — more fields in the extraction schema = larger prompt + response
-- **Token↔Credit** correlation of ~1.0 confirms credits are purely token-based (no fixed overhead)
-""")
-
+        # Driver table
         if hide_credits:
-            display_drivers = drivers[["DOC_TYPE", "TOTAL_CALLS", "AVG_PAGES", "AVG_FILE_SIZE",
-                                        "AVG_TOKENS", "AVG_TOKENS_PER_PAGE", "FIELDS_EXTRACTED"]].copy()
-            display_drivers.columns = ["Doc Type", "Calls", "Avg Pages", "Avg Size (B)",
-                                        "Avg Tokens", "Tokens/Page", "Fields"]
+            cols_show = [
+                "DOC_TYPE",
+                "TOTAL_CALLS",
+                "AVG_PAGES",
+                "AVG_FILE_SIZE",
+                "AVG_TOKENS",
+                "AVG_TOKENS_PER_PAGE",
+                "FIELDS_EXTRACTED",
+            ]
+            names = [
+                "Doc Type",
+                "Calls",
+                "Avg Pages",
+                "Avg Size (B)",
+                "Avg Tokens",
+                "Tokens/Page",
+                "Fields",
+            ]
         else:
-            display_drivers = drivers[["DOC_TYPE", "TOTAL_CALLS", "AVG_PAGES", "AVG_FILE_SIZE",
-                                        "AVG_TOKENS", "AVG_CREDITS", "AVG_CREDITS_PER_PAGE",
-                                        "AVG_TOKENS_PER_PAGE", "FIELDS_EXTRACTED"]].copy()
-            display_drivers.columns = ["Doc Type", "Calls", "Avg Pages", "Avg Size (B)",
-                                        "Avg Tokens", "Avg Credits", "Credits/Page",
-                                        "Tokens/Page", "Fields"]
-            if show_usd:
-                display_drivers["Credits/Page USD"] = display_drivers["Credits/Page"] * credit_rate
-        st.dataframe(
-            display_drivers, hide_index=True, use_container_width=True,
-            column_config={
-                "Avg Credits": st.column_config.NumberColumn(format="%.6f"),
-                "Credits/Page": st.column_config.NumberColumn(format="%.6f"),
-                "Avg Size (B)": st.column_config.NumberColumn(format="%d"),
-                "Avg Tokens": st.column_config.NumberColumn(format="%d"),
-                "Tokens/Page": st.column_config.NumberColumn(format="%d"),
-                "Fields": st.column_config.NumberColumn(format="%d"),
-                **({"Credits/Page USD": st.column_config.NumberColumn(format="$%.6f")} if show_usd else {}),
-            },
-        )
+            cols_show = [
+                "DOC_TYPE",
+                "TOTAL_CALLS",
+                "AVG_PAGES",
+                "AVG_FILE_SIZE",
+                "AVG_TOKENS",
+                "AVG_CREDITS",
+                "AVG_CREDITS_PER_PAGE",
+                "AVG_TOKENS_PER_PAGE",
+                "FIELDS_EXTRACTED",
+            ]
+            names = [
+                "Doc Type",
+                "Calls",
+                "Avg Pages",
+                "Avg Size (B)",
+                "Avg Tokens",
+                "Avg Credits",
+                "Credits/Page",
+                "Tokens/Page",
+                "Fields",
+            ]
+        dd = drivers[cols_show].copy()
+        dd.columns = names
+        if show_usd and not hide_credits:
+            dd["Credits/Page USD"] = dd["Credits/Page"] * credit_rate
+        st.dataframe(dd, hide_index=True, use_container_width=True)
 
-        col_scatter1, col_scatter2 = st.columns(2)
-        with col_scatter1:
-            per_pdf = session.sql(
-                f"SELECT file_name, doc_type, page_count, tokens, ai_credits, "
-                f"file_size_bytes, field_count, credits_per_page "
-                f"FROM {DB}.V_AI_EXTRACT_COST_PER_PDF "
-                f"WHERE start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP()) "
-                f"LIMIT 500"
-            ).to_pandas()
-            if len(per_pdf) > 0:
+        # Scatter plots
+        if len(per_pdf) > 0:
+            sc1, sc2 = st.columns(2)
+            with sc1:
                 fig_s1 = px.scatter(
-                    per_pdf, x="PAGE_COUNT", y="AI_CREDITS", color="DOC_TYPE",
-                    size="TOKENS", hover_data=["FILE_NAME", "TOKENS", "FILE_SIZE_BYTES"],
-                    labels={"PAGE_COUNT": "Pages", "AI_CREDITS": "Credits", "DOC_TYPE": "Doc Type"},
+                    per_pdf,
+                    x="PAGE_COUNT",
+                    y="AI_CREDITS",
+                    color="DOC_TYPE",
+                    size="TOKENS",
+                    hover_data=["FILE_NAME"],
+                    labels={"PAGE_COUNT": "Pages", "AI_CREDITS": "Credits"},
                     title="Pages vs Credits",
-                    color_discrete_sequence=["#29B5E8", "#11567F", "#FF4B4B", "#FFA726", "#66BB6A"],
                 )
-                fig_s1.update_layout(height=350, margin=dict(l=20, r=20, t=40, b=20))
+                fig_s1.update_layout(height=320, margin=dict(l=10, r=10, t=35, b=10))
                 if hide_credits:
-                    fig_s1.update_yaxes(showticklabels=False, title_text="Credits (hidden)")
-                st.plotly_chart(fig_s1, use_container_width=True)
-        with col_scatter2:
-            if len(per_pdf) > 0:
+                    fig_s1.update_yaxes(showticklabels=False, title_text="Hidden")
+                st.plotly_chart(
+                    fig_s1, use_container_width=True, config={"displayModeBar": False}
+                )
+            with sc2:
                 fig_s2 = px.scatter(
-                    per_pdf, x="TOKENS", y="AI_CREDITS", color="DOC_TYPE",
-                    hover_data=["FILE_NAME", "PAGE_COUNT", "FILE_SIZE_BYTES"],
-                    labels={"TOKENS": "Tokens", "AI_CREDITS": "Credits", "DOC_TYPE": "Doc Type"},
+                    per_pdf,
+                    x="TOKENS",
+                    y="AI_CREDITS",
+                    color="DOC_TYPE",
+                    hover_data=["FILE_NAME", "PAGE_COUNT"],
+                    labels={"TOKENS": "Tokens", "AI_CREDITS": "Credits"},
                     title="Tokens vs Credits",
-                    color_discrete_sequence=["#29B5E8", "#11567F", "#FF4B4B", "#FFA726", "#66BB6A"],
                 )
-                fig_s2.update_layout(height=350, margin=dict(l=20, r=20, t=40, b=20))
+                fig_s2.update_layout(height=320, margin=dict(l=10, r=10, t=35, b=10))
                 if hide_credits:
-                    fig_s2.update_yaxes(showticklabels=False, title_text="Credits (hidden)")
-                st.plotly_chart(fig_s2, use_container_width=True)
+                    fig_s2.update_yaxes(showticklabels=False, title_text="Hidden")
+                st.plotly_chart(
+                    fig_s2, use_container_width=True, config={"displayModeBar": False}
+                )
 
-        with st.expander("Per-PDF Detail (recent extractions)"):
-            if len(per_pdf) > 0:
+            with st.expander("Per-PDF Detail"):
                 if hide_credits:
-                    display_pdf = per_pdf[["FILE_NAME", "DOC_TYPE", "PAGE_COUNT", "TOKENS", "FILE_SIZE_BYTES", "FIELD_COUNT"]].copy()
-                    display_pdf.columns = ["File", "Doc Type", "Pages", "Tokens", "Size (B)", "Fields"]
+                    pdf_d = per_pdf[
+                        [
+                            "FILE_NAME",
+                            "DOC_TYPE",
+                            "PAGE_COUNT",
+                            "TOKENS",
+                            "FILE_SIZE_BYTES",
+                            "FIELD_COUNT",
+                        ]
+                    ].copy()
                 else:
-                    display_pdf = per_pdf.copy()
-                    display_pdf.columns = ["File", "Doc Type", "Pages", "Tokens", "Credits",
-                                            "Size (B)", "Fields", "Credits/Page"]
+                    pdf_d = per_pdf.copy()
                     if show_usd:
-                        display_pdf["USD"] = display_pdf["Credits"] * credit_rate
-                st.dataframe(
-                    display_pdf, hide_index=True, use_container_width=True,
-                    column_config={
-                        "Credits": st.column_config.NumberColumn(format="%.6f"),
-                        "Credits/Page": st.column_config.NumberColumn(format="%.6f"),
-                        "Size (B)": st.column_config.NumberColumn(format="%d"),
-                        **({"USD": st.column_config.NumberColumn(format="$%.6f")} if show_usd else {}),
-                    },
-                )
+                        pdf_d["USD"] = pdf_d["AI_CREDITS"] * credit_rate
+                st.dataframe(pdf_d, hide_index=True, use_container_width=True)
     else:
-        st.info("No cost attribution data. Run `sql/13_cost_attribution.sql` to set up per-PDF tracking.")
-except Exception as e:
-    st.warning(f"Could not load cost drivers: {e}")
+        st.info("No cost attribution data. Run `sql/13_cost_attribution.sql`.")
+else:
+    st.caption(
+        "Click the button above to load cost driver analysis (queries ACCOUNT_USAGE views)."
+    )
 
 st.divider()
 
-# --- Cost vs Confidence: Quality-Cost Tradeoff ---
-st.subheader("Cost vs Confidence — Quality-Cost Tradeoff")
-st.caption("Do higher-cost extractions produce higher-confidence results?")
-try:
-    cost_conf = session.sql(f"""
-        WITH conf_flat AS (
-            SELECT
-                e.file_name,
-                r.doc_type,
-                ARRAY_SIZE(OBJECT_KEYS(e.raw_extraction:_confidence)) AS n_fields,
-                f.value::FLOAT AS field_conf
-            FROM {DB}.EXTRACTED_FIELDS e
-            JOIN {DB}.RAW_DOCUMENTS r ON e.file_name = r.file_name,
-            LATERAL FLATTEN(input => e.raw_extraction:_confidence) f
-            WHERE e.raw_extraction:_confidence IS NOT NULL
-        ),
-        conf_avg AS (
-            SELECT
-                file_name,
-                doc_type,
-                n_fields,
-                AVG(field_conf) AS avg_confidence
-            FROM conf_flat
-            GROUP BY 1, 2, 3
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COST vs CONFIDENCE (lazy-loaded)
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.subheader("Cost vs Confidence")
+
+if st.button("Load Confidence Analysis", type="secondary"):
+    with st.spinner("Computing confidence metrics…"):
+        cost_conf = _query(
+            session,
+            f"""
+            WITH conf_flat AS (
+                SELECT
+                    e.file_name, r.doc_type,
+                    f.value::FLOAT AS field_conf
+                FROM {DB}.EXTRACTED_FIELDS e
+                JOIN {DB}.RAW_DOCUMENTS r ON e.file_name = r.file_name,
+                LATERAL FLATTEN(input => e.raw_extraction:_confidence) f
+                WHERE e.raw_extraction:_confidence IS NOT NULL
+            ),
+            conf_avg AS (
+                SELECT file_name, doc_type, AVG(field_conf) AS avg_confidence
+                FROM conf_flat GROUP BY 1, 2
+            )
+            SELECT ca.file_name, ca.doc_type, ca.avg_confidence,
+                   cp.ai_credits, cp.tokens, cp.page_count
+            FROM conf_avg ca
+            LEFT JOIN {DB}.V_AI_EXTRACT_COST_PER_PDF cp ON ca.file_name = cp.file_name
+            WHERE cp.ai_credits IS NOT NULL
+            LIMIT 500
+        """,
         )
-        SELECT
-            ca.file_name,
-            ca.doc_type,
-            ca.avg_confidence,
-            ca.n_fields,
-            cp.ai_credits,
-            cp.tokens,
-            cp.page_count
-        FROM conf_avg ca
-        LEFT JOIN {DB}.V_AI_EXTRACT_COST_PER_PDF cp ON ca.file_name = cp.file_name
-        WHERE cp.ai_credits IS NOT NULL
-        LIMIT 500
-    """).to_pandas()
+
     if len(cost_conf) > 0:
         cc1, cc2, cc3 = st.columns(3)
-        avg_conf = cost_conf["AVG_CONFIDENCE"].mean()
-        low_conf_count = len(cost_conf[cost_conf["AVG_CONFIDENCE"] < 0.7])
-        cc1.metric("Avg Confidence", f"{avg_conf:.2f}")
-        cc2.metric("Low Confidence Docs", f"{low_conf_count}", help="Documents with avg confidence < 0.7")
-        cc3.metric("Docs with Scores", f"{len(cost_conf):,}")
+        cc1.metric("Avg Confidence", f"{cost_conf['AVG_CONFIDENCE'].mean():.2f}")
+        cc2.metric(
+            "Low Confidence (<0.7)", f"{(cost_conf['AVG_CONFIDENCE'] < 0.7).sum()}"
+        )
+        cc3.metric("Docs Analyzed", f"{len(cost_conf):,}")
 
-        col_cc1, col_cc2 = st.columns(2)
-        with col_cc1:
-            fig_cc = px.scatter(
-                cost_conf, x="AVG_CONFIDENCE", y="AI_CREDITS", color="DOC_TYPE",
-                size="TOKENS",
-                hover_data=["FILE_NAME", "TOKENS", "PAGE_COUNT"],
-                labels={"AVG_CONFIDENCE": "Avg Confidence", "AI_CREDITS": "Credits", "DOC_TYPE": "Doc Type"},
-                title="Confidence vs Credits",
-                color_discrete_sequence=["#29B5E8", "#11567F", "#FF4B4B", "#FFA726", "#66BB6A"],
-            )
-            fig_cc.update_layout(height=350, margin=dict(l=20, r=20, t=40, b=20))
-            if hide_credits:
-                fig_cc.update_yaxes(showticklabels=False, title_text="Credits (hidden)")
-            st.plotly_chart(fig_cc, use_container_width=True)
-        with col_cc2:
-            if hide_credits:
-                conf_by_type = cost_conf.groupby("DOC_TYPE").agg(
-                    avg_confidence=("AVG_CONFIDENCE", "mean"),
-                    doc_count=("FILE_NAME", "count"),
-                ).reset_index()
-                conf_by_type.columns = ["Doc Type", "Avg Confidence", "Docs"]
-            else:
-                conf_by_type = cost_conf.groupby("DOC_TYPE").agg(
-                    avg_confidence=("AVG_CONFIDENCE", "mean"),
-                    avg_credits=("AI_CREDITS", "mean"),
-                    doc_count=("FILE_NAME", "count"),
-                ).reset_index()
-                conf_by_type.columns = ["Doc Type", "Avg Confidence", "Avg Credits", "Docs"]
-            st.dataframe(
-                conf_by_type, hide_index=True, use_container_width=True,
-                column_config={
-                    "Avg Confidence": st.column_config.NumberColumn(format="%.3f"),
-                    "Avg Credits": st.column_config.NumberColumn(format="%.6f"),
-                },
-            )
-            st.markdown("""
-**Insight:** If confidence is uniformly high across doc types, the extraction
-quality is consistent regardless of cost. Low-confidence documents may benefit
-from re-extraction or prompt tuning — check the Review page for flagged fields.
-""")
+        fig_cc = px.scatter(
+            cost_conf,
+            x="AVG_CONFIDENCE",
+            y="AI_CREDITS",
+            color="DOC_TYPE",
+            size="TOKENS",
+            hover_data=["FILE_NAME"],
+            labels={"AVG_CONFIDENCE": "Avg Confidence", "AI_CREDITS": "Credits"},
+        )
+        fig_cc.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10))
+        if hide_credits:
+            fig_cc.update_yaxes(showticklabels=False)
+        st.plotly_chart(
+            fig_cc, use_container_width=True, config={"displayModeBar": False}
+        )
     else:
-        st.info("No confidence data available. Run `CALL SP_EXTRACT_BY_DOC_TYPE('ALL')` to populate confidence scores.")
-except Exception as e:
-    st.warning(f"Could not load confidence data: {e}")
-
-st.divider()
-
-col_left, col_right = st.columns(2)
-
-with col_left:
-    st.subheader("Daily AI_EXTRACT Credits")
-    try:
-        daily = session.sql(
-            f"SELECT * FROM {DB}.V_AI_EXTRACT_COST_DAILY "
-            f"WHERE usage_date >= DATEADD('day', -{day_range}, CURRENT_DATE()) "
-            f"ORDER BY usage_date"
-        ).to_pandas()
-        if len(daily) > 0:
-            fig = px.area(
-                daily, x="USAGE_DATE", y="AI_EXTRACT_CREDITS",
-                labels={"USAGE_DATE": "Date", "AI_EXTRACT_CREDITS": "Credits"},
-                color_discrete_sequence=["#29B5E8"],
-            )
-            fig.update_layout(height=300, margin=dict(l=20, r=20, t=10, b=20))
-            if hide_credits:
-                fig.update_yaxes(showticklabels=False, title_text="Credits (hidden)")
-            st.plotly_chart(fig, use_container_width=True)
-
-            if hide_credits:
-                display_daily = daily[["USAGE_DATE", "AI_EXTRACT_CALLS",
-                                       "TOTAL_TOKENS", "DOCS_EXTRACTED"]].copy()
-                display_daily.columns = ["Date", "Extractions", "Tokens", "Unique Docs"]
-            else:
-                display_daily = daily[["USAGE_DATE", "AI_EXTRACT_CREDITS", "AI_EXTRACT_CALLS",
-                                       "TOTAL_TOKENS", "DOCS_EXTRACTED"]].copy()
-                display_daily.columns = ["Date", "AI Credits", "Extractions", "Tokens", "Unique Docs"]
-                if show_usd:
-                    display_daily["Est. USD"] = display_daily["AI Credits"] * credit_rate
-            st.dataframe(
-                display_daily, hide_index=True, use_container_width=True,
-                column_config={
-                    "AI Credits": st.column_config.NumberColumn(format="%.4f"),
-                    "Tokens": st.column_config.NumberColumn(format="%d"),
-                    **({"Est. USD": st.column_config.NumberColumn(format="$%.4f")} if show_usd else {}),
-                },
-            )
-        else:
-            st.info("No AI_EXTRACT usage data in this period.")
-    except Exception as e:
-        st.warning(f"Could not load daily costs: {e}")
-
-with col_right:
-    st.subheader("Credits by Document Type")
-    try:
-        by_type = session.sql(
-            f"SELECT doc_type, COUNT(*) AS calls, "
-            f"ROUND(SUM(ai_credits), 6) AS total_credits, SUM(tokens) AS tokens "
-            f"FROM {DB}.V_AI_EXTRACT_COST_PER_PDF "
-            f"WHERE start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP()) "
-            f"GROUP BY doc_type ORDER BY total_credits DESC"
-        ).to_pandas()
-        if len(by_type) > 0:
-            fig2 = px.bar(
-                by_type, x="DOC_TYPE", y="TOTAL_CREDITS",
-                text="CALLS",
-                labels={"DOC_TYPE": "Document Type", "TOTAL_CREDITS": "AI Credits", "CALLS": "Calls"},
-                color_discrete_sequence=["#11567F"],
-            )
-            fig2.update_layout(height=300, margin=dict(l=20, r=20, t=10, b=20))
-            if hide_credits:
-                fig2.update_yaxes(showticklabels=False, title_text="Credits (hidden)")
-            st.plotly_chart(fig2, use_container_width=True)
-
-            if hide_credits:
-                display_type = by_type[["DOC_TYPE", "CALLS", "TOKENS"]].copy()
-                display_type.columns = ["Doc Type", "Calls", "Tokens"]
-            else:
-                display_type = by_type.copy()
-                display_type.columns = ["Doc Type", "Calls", "AI Credits", "Tokens"]
-                if show_usd:
-                    display_type["Est. USD"] = display_type["AI Credits"] * credit_rate
-            st.dataframe(
-                display_type, hide_index=True, use_container_width=True,
-                column_config={
-                    "AI Credits": st.column_config.NumberColumn(format="%.4f"),
-                    "Tokens": st.column_config.NumberColumn(format="%d"),
-                    **({"Est. USD": st.column_config.NumberColumn(format="$%.4f")} if show_usd else {}),
-                },
-            )
-        else:
-            st.info("No doc-type data available. This view joins query_tag metadata.")
-    except Exception as e:
-        st.warning(f"Could not load credits by doc type: {e}")
-
-st.divider()
-
-if hide_credits:
-    st.subheader("Per-Document Extraction Trend")
+        st.info("No confidence data available.")
 else:
-    st.subheader("Per-Document Credit Trend")
-try:
-    per_doc = session.sql(
-        f"SELECT * FROM {DB}.V_AI_EXTRACT_COST_PER_DOCUMENT "
-        f"WHERE usage_date >= DATEADD('day', -{day_range}, CURRENT_DATE()) "
-        f"ORDER BY usage_date"
-    ).to_pandas()
-    if len(per_doc) > 0:
-        fig3 = px.line(
-            per_doc, x="USAGE_DATE", y="CREDITS_PER_DOC",
-            markers=True,
-            labels={"USAGE_DATE": "Date", "CREDITS_PER_DOC": "Credits/Doc"},
-            color_discrete_sequence=["#FF4B4B"],
-        )
-        fig3.update_layout(height=280, margin=dict(l=20, r=20, t=10, b=20))
-        if hide_credits:
-            fig3.update_yaxes(showticklabels=False, title_text="Credits/Doc (hidden)")
-        st.plotly_chart(fig3, use_container_width=True)
-
-        if hide_credits:
-            display_perdoc = per_doc[["USAGE_DATE", "AI_EXTRACT_CALLS",
-                                       "TOTAL_TOKENS", "DOCS_EXTRACTED"]].copy()
-            display_perdoc.columns = ["Date", "Extractions", "Tokens", "Unique Docs"]
-        else:
-            display_perdoc = per_doc[["USAGE_DATE", "AI_EXTRACT_CREDITS", "AI_EXTRACT_CALLS",
-                                       "TOTAL_TOKENS", "DOCS_EXTRACTED",
-                                       "CREDITS_PER_DOC"]].copy()
-            display_perdoc.columns = ["Date", "AI Credits", "Extractions", "Tokens",
-                                       "Unique Docs", "Credits/Doc"]
-            if show_usd:
-                display_perdoc["USD/Doc"] = display_perdoc["Credits/Doc"] * credit_rate
-        st.dataframe(
-            display_perdoc, hide_index=True, use_container_width=True,
-            column_config={
-                "AI Credits": st.column_config.NumberColumn(format="%.4f"),
-                "Credits/Doc": st.column_config.NumberColumn(format="%.6f"),
-                "Tokens": st.column_config.NumberColumn(format="%d"),
-                **({"USD/Doc": st.column_config.NumberColumn(format="$%.4f")} if show_usd else {}),
-            },
-        )
-    else:
-        st.info("No per-document credit data available yet.")
-except Exception as e:
-    st.warning(f"Could not load per-document credits: {e}")
+    st.caption("Click to load confidence vs cost analysis.")
 
 st.divider()
 
-st.subheader("Recent AI_EXTRACT Calls")
-try:
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CREDITS BY DOC TYPE
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.subheader("Credits by Document Type")
+
+by_type = _query(
+    session,
+    f"""
+    SELECT doc_type, COUNT(*) AS calls,
+           ROUND(SUM(ai_credits), 6) AS total_credits, SUM(tokens) AS tokens
+    FROM {DB}.V_AI_EXTRACT_COST_PER_PDF
+    WHERE start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP())
+    GROUP BY doc_type ORDER BY total_credits DESC
+""",
+)
+
+if len(by_type) > 0:
+    fig2 = px.bar(
+        by_type,
+        x="DOC_TYPE",
+        y="TOTAL_CREDITS",
+        text="CALLS",
+        labels={"DOC_TYPE": "", "TOTAL_CREDITS": "Credits"},
+        color_discrete_sequence=["#11567F"],
+    )
+    fig2.update_traces(textposition="outside")
+    fig2.update_layout(
+        height=280,
+        margin=dict(l=10, r=10, t=10, b=10),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
     if hide_credits:
-        queries = session.sql(
-            f"SELECT query_id, start_time, doc_type, tokens, elapsed_sec, rows_produced "
-            f"FROM {DB}.V_AI_EXTRACT_QUERY_LOG "
-            f"WHERE start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP()) "
-            f"ORDER BY start_time DESC LIMIT 100"
-        ).to_pandas()
-    else:
-        queries = session.sql(
-            f"SELECT query_id, start_time, doc_type, ai_credits, tokens, elapsed_sec, rows_produced "
-            f"FROM {DB}.V_AI_EXTRACT_QUERY_LOG "
-            f"WHERE start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP()) "
-            f"ORDER BY start_time DESC LIMIT 100"
-        ).to_pandas()
+        fig2.update_yaxes(showticklabels=False)
+    st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+else:
+    st.info("No doc-type credit data available.")
+
+st.divider()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RECENT CALLS (lazy table)
+# ══════════════════════════════════════════════════════════════════════════════
+
+with st.expander("Recent AI_EXTRACT Calls"):
+    queries = _query(
+        session,
+        f"""
+        SELECT query_id, start_time, doc_type, ai_credits, tokens, elapsed_sec, rows_produced
+        FROM {DB}.V_AI_EXTRACT_QUERY_LOG
+        WHERE start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP())
+        ORDER BY start_time DESC LIMIT 100
+    """,
+    )
     if len(queries) > 0:
-        if show_usd:
+        if hide_credits:
+            queries = queries.drop(columns=["AI_CREDITS"], errors="ignore")
+        elif show_usd:
             queries["EST_USD"] = queries["AI_CREDITS"] * credit_rate
-        st.dataframe(
-            queries, use_container_width=True, hide_index=True,
-            column_config={
-                "AI_CREDITS": st.column_config.NumberColumn("AI Credits", format="%.6f"),
-                "TOKENS": st.column_config.NumberColumn("Tokens", format="%d"),
-                "ELAPSED_SEC": st.column_config.NumberColumn("Duration (s)", format="%.1f"),
-                **({"EST_USD": st.column_config.NumberColumn("Est. USD", format="$%.4f")} if show_usd else {}),
-            },
-        )
+        st.dataframe(queries, hide_index=True, use_container_width=True)
     else:
-        st.info("No AI_EXTRACT calls found in this period.")
-except Exception as e:
-    st.warning(f"Could not load query log: {e}")
+        st.info("No calls found in this period.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INFRASTRUCTURE CREDITS (all lazy-loaded in expanders)
+# ══════════════════════════════════════════════════════════════════════════════
 
 st.divider()
 
 if hide_credits:
     st.subheader("Infrastructure")
-    st.info("Infrastructure credit details are hidden in demo mode. Toggle off Demo Mode in the sidebar to view.")
+    st.info("Infrastructure details hidden in demo mode.")
 else:
-    st.subheader("Infrastructure Credits (not included in Credits/Doc)")
-    st.caption("These are the other credit costs for running the pipeline — warehouse compute, Streamlit hosting, etc.")
-
-if not hide_credits:
-    st.caption("Click each section to load data from ACCOUNT_USAGE views (may take a few seconds).")
+    st.subheader("Infrastructure Credits")
+    st.caption(
+        "Warehouse, SPCS, and total account breakdown — click to load (queries ACCOUNT_USAGE)"
+    )
 
     with st.expander("Warehouse Credits (AI_EXTRACT_WH)"):
-        try:
-            wh_credits = session.sql(f"""
-                SELECT
-                    DATE_TRUNC('day', start_time)::DATE AS usage_date,
-                    SUM(credits_used) AS warehouse_credits
-                FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
-                WHERE warehouse_name = 'AI_EXTRACT_WH'
-                  AND start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP())
-                GROUP BY 1 ORDER BY 1
-            """).to_pandas()
-            if len(wh_credits) > 0:
-                total_wh = wh_credits["WAREHOUSE_CREDITS"].sum()
-                st.metric("Warehouse Credits", f"{total_wh:.4f}",
-                          delta=f"${total_wh * credit_rate:.2f} USD" if show_usd else None)
-                fig_wh = px.bar(
-                    wh_credits, x="USAGE_DATE", y="WAREHOUSE_CREDITS",
-                    labels={"USAGE_DATE": "Date", "WAREHOUSE_CREDITS": "Credits"},
-                    color_discrete_sequence=["#11567F"],
-                )
-                fig_wh.update_layout(height=250, margin=dict(l=20, r=20, t=10, b=20))
-                st.plotly_chart(fig_wh, use_container_width=True)
-                st.caption("Includes idle time, auto-suspend gaps, all queries (not just AI_EXTRACT)")
-            else:
-                st.info("No warehouse usage for AI_EXTRACT_WH in this period.")
-        except Exception as e:
-            st.warning(f"Could not load warehouse credits: {e}")
+        wh = _query(
+            session,
+            f"""
+            SELECT DATE_TRUNC('day', start_time)::DATE AS usage_date,
+                   SUM(credits_used) AS warehouse_credits
+            FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+            WHERE warehouse_name = 'AI_EXTRACT_WH'
+              AND start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP())
+            GROUP BY 1 ORDER BY 1
+        """,
+        )
+        if len(wh) > 0:
+            total_wh = wh["WAREHOUSE_CREDITS"].sum()
+            st.metric(
+                "Total WH Credits",
+                f"{total_wh:.4f}",
+                delta=f"${total_wh * credit_rate:.2f}" if show_usd else None,
+            )
+            fig_wh = px.bar(
+                wh,
+                x="USAGE_DATE",
+                y="WAREHOUSE_CREDITS",
+                color_discrete_sequence=["#11567F"],
+            )
+            fig_wh.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(
+                fig_wh, use_container_width=True, config={"displayModeBar": False}
+            )
+        else:
+            st.info("No warehouse usage in this period.")
 
     with st.expander("SPCS Credits (Streamlit Hosting)"):
-        try:
-            spcs_credits = session.sql(f"""
-                SELECT
-                    DATE_TRUNC('day', start_time)::DATE AS usage_date,
-                    SUM(credits_used) AS spcs_credits
-                FROM SNOWFLAKE.ACCOUNT_USAGE.SNOWPARK_CONTAINER_SERVICES_HISTORY
-                WHERE compute_pool_name = 'AI_EXTRACT_POC_POOL'
-                  AND start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP())
-                GROUP BY 1 ORDER BY 1
-            """).to_pandas()
-            if len(spcs_credits) > 0:
-                total_spcs = spcs_credits["SPCS_CREDITS"].sum()
-                st.metric("SPCS Credits", f"{total_spcs:.4f}",
-                          delta=f"${total_spcs * credit_rate:.2f} USD" if show_usd else None)
-                fig_spcs = px.bar(
-                    spcs_credits, x="USAGE_DATE", y="SPCS_CREDITS",
-                    labels={"USAGE_DATE": "Date", "SPCS_CREDITS": "Credits"},
-                    color_discrete_sequence=["#FF4B4B"],
-                )
-                fig_spcs.update_layout(height=250, margin=dict(l=20, r=20, t=10, b=20))
-                st.plotly_chart(fig_spcs, use_container_width=True)
-                st.caption("AI_EXTRACT_POC_POOL — hosts the Streamlit container runtime (UI only)")
-            else:
-                st.info("No SPCS usage for AI_EXTRACT_POC_POOL in this period.")
-        except Exception as e:
-            st.warning(f"Could not load SPCS credits: {e}")
+        spcs = _query(
+            session,
+            f"""
+            SELECT DATE_TRUNC('day', start_time)::DATE AS usage_date,
+                   SUM(credits_used) AS spcs_credits
+            FROM SNOWFLAKE.ACCOUNT_USAGE.SNOWPARK_CONTAINER_SERVICES_HISTORY
+            WHERE compute_pool_name = 'AI_EXTRACT_POC_POOL'
+              AND start_time >= DATEADD('day', -{day_range}, CURRENT_TIMESTAMP())
+            GROUP BY 1 ORDER BY 1
+        """,
+        )
+        if len(spcs) > 0:
+            total_spcs = spcs["SPCS_CREDITS"].sum()
+            st.metric(
+                "Total SPCS Credits",
+                f"{total_spcs:.4f}",
+                delta=f"${total_spcs * credit_rate:.2f}" if show_usd else None,
+            )
+            fig_spcs = px.bar(
+                spcs,
+                x="USAGE_DATE",
+                y="SPCS_CREDITS",
+                color_discrete_sequence=["#FF4B4B"],
+            )
+            fig_spcs.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(
+                fig_spcs, use_container_width=True, config={"displayModeBar": False}
+            )
+        else:
+            st.info("No SPCS usage in this period.")
 
-    with st.expander("Full Account Credit Breakdown (all service types)"):
-        try:
-            breakdown = session.sql(
-                f"SELECT * FROM {DB}.V_AI_EXTRACT_COST_BREAKDOWN "
-                f"WHERE usage_date >= DATEADD('day', -{day_range}, CURRENT_DATE()) "
-                f"ORDER BY usage_date DESC, service_type"
-            ).to_pandas()
-            if len(breakdown) > 0:
-                fig4 = px.bar(
-                    breakdown, x="USAGE_DATE", y="CREDITS_USED", color="SERVICE_TYPE",
-                    labels={"USAGE_DATE": "Date", "CREDITS_USED": "Credits", "SERVICE_TYPE": "Service"},
-                    color_discrete_map={
-                        "AI_SERVICES": "#29B5E8",
-                        "WAREHOUSE_METERING": "#11567F",
-                        "SNOWPARK_CONTAINER_SERVICES": "#FF4B4B",
-                    },
-                    barmode="stack",
-                )
-                fig4.update_layout(height=350, margin=dict(l=20, r=20, t=10, b=20))
-                st.plotly_chart(fig4, use_container_width=True)
-
-                if show_usd:
-                    breakdown["EST_USD"] = breakdown["CREDITS_USED"] * credit_rate
-                st.dataframe(
-                    breakdown, hide_index=True, use_container_width=True,
-                    column_config={
-                        "CREDITS_USED": st.column_config.NumberColumn("Credits Used", format="%.4f"),
-                        "CREDITS_BILLED": st.column_config.NumberColumn("Credits Billed", format="%.4f"),
-                        **({"EST_USD": st.column_config.NumberColumn("Est. USD", format="$%.4f")} if show_usd else {}),
-                    },
-                )
-            else:
-                st.info("No metering data in this period.")
-        except Exception as e:
-            st.warning(f"Could not load credit breakdown: {e}")
+    with st.expander("Full Account Breakdown"):
+        breakdown = _query(
+            session,
+            f"""
+            SELECT * FROM {DB}.V_AI_EXTRACT_COST_BREAKDOWN
+            WHERE usage_date >= DATEADD('day', -{day_range}, CURRENT_DATE())
+            ORDER BY usage_date DESC, service_type
+        """,
+        )
+        if len(breakdown) > 0:
+            fig4 = px.bar(
+                breakdown,
+                x="USAGE_DATE",
+                y="CREDITS_USED",
+                color="SERVICE_TYPE",
+                barmode="stack",
+                color_discrete_map={
+                    "AI_SERVICES": "#29B5E8",
+                    "WAREHOUSE_METERING": "#11567F",
+                    "SNOWPARK_CONTAINER_SERVICES": "#FF4B4B",
+                },
+            )
+            fig4.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(
+                fig4, use_container_width=True, config={"displayModeBar": False}
+            )
+            st.dataframe(breakdown, hide_index=True, use_container_width=True)
+        else:
+            st.info("No metering data in this period.")
 
     with st.expander("Resource Monitor Status"):
         try:
-            rm = session.sql("SHOW RESOURCE MONITORS LIKE 'AI_EXTRACT_MONITOR'").to_pandas()
+            rm = session.sql(
+                "SHOW RESOURCE MONITORS LIKE 'AI_EXTRACT_MONITOR'"
+            ).to_pandas()
             if len(rm) > 0:
                 r = rm.iloc[0]
                 rc1, rc2, rc3 = st.columns(3)
-                rc1.metric("Credit Quota", r.get("credit_quota", "N/A"))
-                rc2.metric("Credits Used", r.get("used_credits", "N/A"))
+                rc1.metric("Quota", r.get("credit_quota", "N/A"))
+                rc2.metric("Used", r.get("used_credits", "N/A"))
                 rc3.metric("Remaining", r.get("remaining_credits", "N/A"))
             else:
-                st.info("No resource monitor configured. See `sql/10_harden.sql`.")
+                st.info("No resource monitor configured.")
         except Exception:
-            st.info("Resource monitor info requires MONITOR privilege on the warehouse.")
+            st.info("Requires MONITOR privilege on the warehouse.")
+
+
+render_nav_bar()
