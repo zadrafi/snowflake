@@ -1,0 +1,29 @@
+[project]
+name = "ap-invoice-demo"
+version = "1.0.0"
+description = "Convenience Store Accounts Payable Demo — Streamlit in Snowflake"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit[snowflake]==1.50.0",
+    "plotly>=5.18.0",
+    "pypdfium2>=4.0",
+    "snowflake-snowpark-python>=1.20.0",
+]
+
+[dependency-groups]
+dev = [
+    "playwright>=1.58.0",
+    "pytest>=9.0.1",
+    "pytest-playwright>=0.7.2",
+    "pytest-xdist>=3.5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "-q", "-n", "2"]
+markers = [
+    "smoke: core happy-path tests that should always pass quickly",
+    "slow: tests that take >10s (e.g. full navigation, multi-page)",
+]
+
+[tool.streamlit]
