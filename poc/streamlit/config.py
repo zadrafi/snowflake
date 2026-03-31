@@ -11,7 +11,8 @@ Usage in any page:
     config = get_doc_type_config(session, "UTILITY_BILL")
     inject_custom_css()  # call once per page for consistent styling
 """
-
+DB = "AI_EXTRACT_POC.DOCUMENTS"
+STAGE = "AI_EXTRACT_POC.DOCUMENTS.STREAMLIT_STAGE"
 import json
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
@@ -180,8 +181,7 @@ def get_doc_type_labels(session, doc_type: str = "INVOICE") -> dict:
     try:
         rows = session.sql(
             f"SELECT field_labels FROM {DB}.DOCUMENT_TYPE_CONFIG "
-            f"WHERE doc_type = ?",
-            params=[doc_type]
+            f"WHERE doc_type = '{doc_type}'"
         ).collect()
         if rows:
             raw = rows[0]["FIELD_LABELS"]
@@ -213,8 +213,7 @@ def get_doc_type_config(session, doc_type: str) -> dict | None:
     try:
         rows = session.sql(
             f"SELECT * FROM {DB}.DOCUMENT_TYPE_CONFIG "
-            f"WHERE doc_type = ?",
-            params=[doc_type]
+            f"WHERE doc_type = '{doc_type}'"
         ).collect()
         if not rows:
             return None
@@ -276,8 +275,7 @@ def get_raw_extraction_fields(session, record_id: int) -> dict:
     try:
         rows = session.sql(
             f"SELECT raw_extraction FROM {DB}.EXTRACTED_FIELDS "
-            f"WHERE record_id = ?",
-            params=[record_id]
+            f"WHERE record_id = {record_id}"
         ).collect()
         if rows and rows[0]["RAW_EXTRACTION"]:
             return _parse_variant(rows[0]["RAW_EXTRACTION"])
@@ -367,3 +365,12 @@ def _parse_variant(val) -> dict | None:
     if isinstance(val, dict):
         return val
     return None
+
+
+def render_nav_bar():
+    """No-op — navigation is handled by st.navigation(position='top') in streamlit_app.py.
+
+    This function is kept as a stub so existing pages that call render_nav_bar()
+    don't need code changes. It intentionally does nothing.
+    """
+    pass

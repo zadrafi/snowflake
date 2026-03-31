@@ -1,158 +1,45 @@
 """
-AI_EXTRACT Document Processing — POC Dashboard
-Landing page with pipeline status and overview.
+AI_EXTRACT Document Processing — Entrypoint
+Uses st.navigation(position="top") for a horizontal top nav bar.
+This file acts as the router — each page is a st.Page reference.
 """
 
 import streamlit as st
-from config import DB, get_session, inject_custom_css, sidebar_branding
 
 st.set_page_config(
-    page_title="AI_EXTRACT POC",
+    page_title="AI_EXTRACT",
     page_icon="📄",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
-inject_custom_css()
 
-# ── Hero header ───────────────────────────────────────────────────────────────
-st.markdown(
-    '<h1 style="margin-bottom:0;">AI-Powered Document Extraction</h1>'
-    '<p style="font-size:1.15rem; color:#5a6577; margin-top:0.25rem;">'
-    'Extract structured data from your documents using '
-    '<strong style="color:#29B5E8;">Snowflake Cortex AI_EXTRACT</strong> &mdash; '
-    'no external services, no API keys, no infrastructure to manage.'
-    '</p>',
-    unsafe_allow_html=True,
-)
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE DEFINITIONS
+# ══════════════════════════════════════════════════════════════════════════════
+# st.navigation replaces the pages/ directory auto-discovery.
+# Pages are grouped into sections that appear as dropdown menus in the top bar.
 
-st.divider()
+pages = {
+    "": [
+        st.Page("pages/home.py", title="Home", icon="🏠", default=True),
+    ],
+    "Documents": [
+        st.Page("pages/6_Process_New.py", title="Process New", icon="📤"),
+        st.Page("pages/1_Document_Viewer.py", title="Doc Viewer", icon="📋"),
+        st.Page("pages/3_Review.py", title="Review", icon="✅"),
+    ],
+    "Analytics": [
+        st.Page("pages/0_Dashboard.py", title="Dashboard", icon="📊"),
+        st.Page("pages/2_Analytics.py", title="Analytics", icon="📈"),
+        st.Page("pages/8_Accuracy.py", title="Accuracy", icon="🎯"),
+    ],
+    "Settings": [
+        st.Page("pages/4_Admin.py", title="Admin", icon="⚙️"),
+        st.Page("pages/5_Cost.py", title="Cost", icon="💰"),
+        st.Page("pages/7_Claude_PDF_Analysis.py", title="Claude", icon="🤖"),
+    ],
+}
 
-# --- Live Pipeline Stats ---
-session = get_session()
-
-try:
-    status = session.sql(
-        f"SELECT * FROM {DB}.V_EXTRACTION_STATUS"
-    ).to_pandas()
-
-    if len(status) > 0:
-        s = status.iloc[0]
-        st.header("Pipeline Status")
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            st.metric("Total Files Staged", f"{int(s['TOTAL_FILES']):,}")
-        with col2:
-            st.metric("Successfully Extracted", f"{int(s['EXTRACTED_FILES']):,}")
-        with col3:
-            st.metric("Pending", f"{int(s['PENDING_FILES']):,}")
-        with col4:
-            st.metric("Failed", f"{int(s['FAILED_FILES']):,}")
-
-        if s["LAST_EXTRACTION"]:
-            st.caption(f"Last extraction: {s['LAST_EXTRACTION']}")
-except Exception:
-    st.warning(
-        "Could not load pipeline status. "
-        "Have you run the setup scripts (`01_setup.sql` through `05_views.sql`)?"
-    )
-
-st.divider()
-
-# --- How It Works ---
-st.header("How It Works")
-
-st.graphviz_chart(
-    """
-    digraph architecture {
-        rankdir=LR;
-        bgcolor="transparent";
-        node [shape=box, style="rounded,filled", fontname="Helvetica",
-              fontsize=12, fillcolor="#e8f0fe", color="#4285f4"];
-        edge [color="#5f6368", fontname="Helvetica", fontsize=10];
-
-        subgraph cluster_ingest {
-            label="Ingest";
-            style="dashed"; color="#dadce0"; fontname="Helvetica";
-            docs  [label="Your Documents\\n(PDFs, images, etc.)", fillcolor="#fce8e6", color="#ea4335"];
-            stage [label="Snowflake\\nInternal Stage"];
-        }
-
-        subgraph cluster_process {
-            label="Process";
-            style="dashed"; color="#dadce0"; fontname="Helvetica";
-            raw    [label="RAW_DOCUMENTS\\n(file tracking)"];
-            stream [label="Stream\\n(change detection)"];
-            task   [label="Scheduled Task\\n(every 5 min)"];
-            ai     [label="Cortex\\nAI_EXTRACT", fillcolor="#e6f4ea", color="#34a853"];
-        }
-
-        subgraph cluster_serve {
-            label="Serve";
-            style="dashed"; color="#dadce0"; fontname="Helvetica";
-            tables [label="EXTRACTED_FIELDS\\nEXTRACTED_TABLE_DATA"];
-            views  [label="Analytical Views"];
-            app    [label="This Dashboard", fillcolor="#fef7e0", color="#fbbc04"];
-        }
-
-        docs   -> stage [label="Upload"];
-        stage  -> raw   [label="Register"];
-        raw    -> stream;
-        stream -> task [label="triggers"];
-        task   -> ai    [label="calls SP"];
-        ai     -> tables [label="structured\\noutput"];
-        tables -> views;
-        views  -> app;
-        stage  -> app [label="PDF render", style=dashed];
-    }
-    """,
-    use_container_width=True,
-)
-
-st.divider()
-
-# --- Quick summary from extracted data ---
-try:
-    summary = session.sql(
-        f"""
-        SELECT
-            (SELECT COUNT(*) FROM {DB}.EXTRACTED_FIELDS) AS documents,
-            (SELECT COUNT(*) FROM {DB}.EXTRACTED_TABLE_DATA) AS line_items,
-            (SELECT COUNT(DISTINCT field_1) FROM {DB}.EXTRACTED_FIELDS WHERE field_1 IS NOT NULL) AS unique_senders
-        """
-    ).to_pandas()
-
-    if len(summary) > 0:
-        r = summary.iloc[0]
-        st.header("Extraction Summary")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Documents Extracted", f"{int(r['DOCUMENTS']):,}")
-        m2.metric("Line Items Parsed", f"{int(r['LINE_ITEMS']):,}")
-        m3.metric("Unique Senders", f"{int(r['UNIQUE_SENDERS']):,}")
-except Exception:
-    pass  # Pipeline status warning above is sufficient
-
-# --- Sidebar navigation guide ---
-with st.sidebar:
-    sidebar_branding()
-    st.markdown("### Pages")
-    st.markdown(
-        """
-**Dashboard** — KPI cards, document counts,
-recent extractions
-
-**Document Viewer** — Browse all documents,
-view extracted fields alongside the source PDF
-
-**Analytics** — Charts and breakdowns by
-vendor, time period, and line items
-
-**Review & Approve** — Review extracted invoices
-and record approval decisions
-
-**Cost** — AI_EXTRACT credit usage, per-PDF
-cost attribution, and confidence-cost tradeoff
-"""
-    )
+pg = st.navigation(pages, position="top")
+pg.run()
