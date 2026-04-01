@@ -9,5 +9,6 @@ dependencies = [
     "pypdfium2",
     "pypdf",
     "reportlab",
-    "statsmodels"
+    "statsmodels",
+    "pandas"
 ]
