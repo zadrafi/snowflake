@@ -1,0 +1,35 @@
+# NOTE: This file is used by `snow streamlit deploy` (Snowflake CLI).
+# If you used deploy_poc.sh or sql/07_deploy_streamlit.sql, those scripts
+# handle name substitution automatically. If deploying manually via
+# `snow streamlit deploy`, update the warehouse and compute_pool below
+# to match your environment.
+definition_version: "2"
+entities:
+  ai_extract_dashboard:
+    type: streamlit
+    identifier:
+      name: AI_EXTRACT
+    title: "AI_EXTRACT"
+    comment: "Document extraction dashboard powered by Cortex AI_EXTRACT"
+    query_warehouse: AI_EXTRACT_WH          # <-- change to your warehouse name
+    main_file: streamlit_app.py
+    pages_dir: pages/
+    tests_dir: tests/
+    additional_source_files:
+      - config.py
+      - environment.yml
+      - field_highlighter.py
+      - validate_extraction.py
+      - writeback_pdf.py
+      - snip_annotator.py   
+      - pyproject.toml
+      - conftest.py
+      - claude_extraction_utils.py
+      - uv.lock
+    stage: STREAMLIT_STAGE
+    runtime:
+      name: SYSTEM$ST_CONTAINER_RUNTIME_PY3_11
+      compute_pool: AI_EXTRACT_POC_POOL     # <-- change to your compute pool name
+      external_access_integrations:
+        - PYPI_ACCESS_INTEGRATION
+        - PYPI_ACCESS
