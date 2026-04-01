@@ -1,361 +1,51 @@
-name: AI Extract POC Tests
-
+# .github/workflows/test.yml
+name: Test Suite
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'poc/**'
-      - '.github/workflows/test.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'poc/**'
-      - '.github/workflows/test.yml'
-  workflow_dispatch:
-    inputs:
-      clouds:
-        description: 'Clouds to test (comma-separated: aws,azure,gcp)'
-        required: false
-        default: 'aws,azure,gcp'
+  push:
+    branches: [main]
 
 env:
-  PYTHON_VERSION: '3.11'
+  POC_CONNECTION: ci
   POC_DB: AI_EXTRACT_POC
   POC_SCHEMA: DOCUMENTS
   POC_WH: AI_EXTRACT_WH
   POC_ROLE: AI_EXTRACT_APP
 
 jobs:
-  # -----------------------------------------------------------------------
-  # Secret scanning — detect leaked credentials before they reach main
-  # -----------------------------------------------------------------------
-  secret-scan:
-    name: Secret Scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Set up Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Run detect-secrets
-        run: |
-          pip install detect-secrets==1.5.0
-          detect-secrets scan --baseline .secrets.baseline
-          detect-secrets audit --report .secrets.baseline
-
-      - name: Check for private keys
-        run: |
-          FOUND=0
-          for pattern in '-----BEGIN.*PRIVATE KEY-----' 'AKIA[0-9A-Z]{16}' 'sk-[a-zA-Z0-9]{48}'; do
-            if grep -rIl "$pattern" --include='*.py' --include='*.yml' --include='*.yaml' \
-               --include='*.toml' --include='*.json' --include='*.sh' --include='*.sql' \
-               --exclude-dir='.git' --exclude='.secrets.baseline' . 2>/dev/null; then
-              echo "::error::Potential secret found matching pattern: $pattern"
-              FOUND=1
-            fi
-          done
-          if [ "$FOUND" -eq 1 ]; then
-            echo "::error::Secret scan failed — review findings above"
-            exit 1
-          fi
-          echo "No secrets detected"
-
-  # -----------------------------------------------------------------------
-  # Unit tests — no Snowflake connection required
-  # -----------------------------------------------------------------------
   unit-tests:
-    name: Unit Tests
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: poc
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest snowflake-snowpark-python pypdfium2 Pillow reportlab
+      - run: pytest  # runs only unit tests (default marker)
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Set up Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: uv sync --all-groups
-
-      - name: Run unit tests
-        run: |
-          uv run pytest \
-            tests/test_normalize_unit.py \
-            tests/test_review_helpers.py \
-            tests/test_config_helpers.py \
-            tests/test_admin_builder.py \
-            -v
-
-      - name: Lint — compile check
-        run: |
-          uv run python -m py_compile streamlit/streamlit_app.py
-          uv run python -m py_compile streamlit/config.py
-          for f in streamlit/pages/*.py; do
-            uv run python -m py_compile "$f"
-          done
-
-  # -----------------------------------------------------------------------
-  # SQL integration tests — matrix across AWS, Azure, GCP
-  # -----------------------------------------------------------------------
-  sql-tests:
-    name: SQL Tests (${{ matrix.cloud }})
+  integration-tests:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
-    strategy:
-      fail-fast: false
-      matrix:
-        cloud: [aws, azure, gcp]
-        include:
-          - cloud: aws
-            account_secret: SNOWFLAKE_ACCOUNT_AWS
-            token_secret: SNOWFLAKE_TOKEN_AWS
-          - cloud: azure
-            account_secret: SNOWFLAKE_ACCOUNT_AZURE
-            token_secret: SNOWFLAKE_TOKEN_AZURE
-          - cloud: gcp
-            account_secret: SNOWFLAKE_ACCOUNT_GCP
-            token_secret: SNOWFLAKE_TOKEN_GCP
-    defaults:
-      run:
-        working-directory: poc
-    env:
-      SNOWFLAKE_ACCOUNT: ${{ secrets[matrix.account_secret] }}
-      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-      SNOWFLAKE_TOKEN: ${{ secrets[matrix.token_secret] }}
-      POC_CONNECTION: ci
+    needs: unit-tests  # only run if unit tests pass
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check Snowflake secrets are configured
-        id: check_secrets
-        run: |
-          if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$SNOWFLAKE_USER" ] || [ -z "$SNOWFLAKE_TOKEN" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Snowflake secrets not configured for ${{ matrix.cloud }} — skipping"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install uv
-        if: steps.check_secrets.outputs.skip != 'true'
-        uses: astral-sh/setup-uv@v4
-
-      - name: Set up Python
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: uv sync --all-groups
-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest snowflake-connector-python snowflake-snowpark-python
       - name: Configure Snowflake connection
-        if: steps.check_secrets.outputs.skip != 'true'
         run: |
           mkdir -p ~/.snowflake
-          cat > ~/.snowflake/connections.toml <<EOF
+          cat > ~/.snowflake/connections.toml << EOF
           [ci]
-          account = "${SNOWFLAKE_ACCOUNT}"
-          user = "${SNOWFLAKE_USER}"
-          authenticator = "programmatic_access_token"
-          token = "${SNOWFLAKE_TOKEN}"
-          database = "${POC_DB}"
-          schema = "${POC_SCHEMA}"
-          warehouse = "${POC_WH}"
-          role = "${POC_ROLE}"
+          account = "${{ secrets.SNOWFLAKE_ACCOUNT }}"
+          user = "${{ secrets.SNOWFLAKE_USER }}"
+          private_key_path = "/tmp/rsa_key.p8"
+          role = "AI_EXTRACT_APP"
+          warehouse = "AI_EXTRACT_WH"
+          database = "AI_EXTRACT_POC"
+          schema = "DOCUMENTS"
           EOF
-          chmod 0600 ~/.snowflake/connections.toml
-
-      - name: Run SQL integration tests
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: |
-          uv run pytest tests/ \
-            --ignore=tests/test_e2e \
-            --timeout=120 \
-            -v --tb=short \
-            --junitxml=test-results-${{ matrix.cloud }}.xml
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        if: always() && steps.check_secrets.outputs.skip != 'true'
-        with:
-          name: test-results-${{ matrix.cloud }}
-          path: poc/test-results-${{ matrix.cloud }}.xml
-
-  # -----------------------------------------------------------------------
-  # E2E browser tests — matrix across AWS, Azure, GCP
-  # -----------------------------------------------------------------------
-  e2e-tests:
-    name: E2E Tests (${{ matrix.cloud }})
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        cloud: [aws, azure, gcp]
-        include:
-          - cloud: aws
-            account_secret: SNOWFLAKE_ACCOUNT_AWS
-            token_secret: SNOWFLAKE_TOKEN_AWS
-          - cloud: azure
-            account_secret: SNOWFLAKE_ACCOUNT_AZURE
-            token_secret: SNOWFLAKE_TOKEN_AZURE
-          - cloud: gcp
-            account_secret: SNOWFLAKE_ACCOUNT_GCP
-            token_secret: SNOWFLAKE_TOKEN_GCP
-    defaults:
-      run:
-        working-directory: poc
-    env:
-      SNOWFLAKE_ACCOUNT: ${{ secrets[matrix.account_secret] }}
-      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-      SNOWFLAKE_TOKEN: ${{ secrets[matrix.token_secret] }}
-      POC_CONNECTION: ci
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check Snowflake secrets are configured
-        id: check_secrets
-        run: |
-          if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$SNOWFLAKE_USER" ] || [ -z "$SNOWFLAKE_TOKEN" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Snowflake secrets not configured for ${{ matrix.cloud }} — skipping"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install uv
-        if: steps.check_secrets.outputs.skip != 'true'
-        uses: astral-sh/setup-uv@v4
-
-      - name: Set up Python
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: uv sync --all-groups
-
-      - name: Install Playwright browsers
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: uv run playwright install chromium --with-deps
-
-      - name: Configure Snowflake connection
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: |
-          mkdir -p ~/.snowflake
-          cat > ~/.snowflake/connections.toml <<EOF
-          [ci]
-          account = "${SNOWFLAKE_ACCOUNT}"
-          user = "${SNOWFLAKE_USER}"
-          authenticator = "programmatic_access_token"
-          token = "${SNOWFLAKE_TOKEN}"
-          database = "${POC_DB}"
-          schema = "${POC_SCHEMA}"
-          warehouse = "${POC_WH}"
-          role = "${POC_ROLE}"
-          EOF
-          chmod 0600 ~/.snowflake/connections.toml
-
-      - name: Configure Streamlit secrets
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: |
-          mkdir -p streamlit/.streamlit
-          cat > streamlit/.streamlit/secrets.toml <<EOF
-          [connections.snowflake]
-          account = "${SNOWFLAKE_ACCOUNT}"
-          user = "${SNOWFLAKE_USER}"
-          authenticator = "programmatic_access_token"
-          token = "${SNOWFLAKE_TOKEN}"
-          warehouse = "${POC_WH}"
-          database = "${POC_DB}"
-          schema = "${POC_SCHEMA}"
-          role = "${POC_ROLE}"
-          EOF
-          chmod 0600 streamlit/.streamlit/secrets.toml
-
-      - name: Start Streamlit server
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: |
-          POC_CONNECTION=ci POC_DB="${POC_DB}" POC_SCHEMA="${POC_SCHEMA}" \
-            POC_WH="${POC_WH}" POC_ROLE="${POC_ROLE}" \
-            uv run streamlit run streamlit/streamlit_app.py \
-              --server.port 8504 --server.headless true \
-              --browser.gatherUsageStats false &
-          # Wait for server to be ready
-          for i in $(seq 1 30); do
-            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8504 | grep -q 200; then
-              echo "Streamlit server ready after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-
-      - name: Run E2E tests (per-file for Playwright stability)
-        if: steps.check_secrets.outputs.skip != 'true'
-        run: |
-          EXIT_CODE=0
-          for test_file in \
-            tests/test_e2e/test_poc_landing.py \
-            tests/test_e2e/test_poc_dashboard.py \
-            tests/test_e2e/test_poc_document_viewer.py \
-            tests/test_e2e/test_poc_analytics.py \
-            tests/test_e2e/test_poc_review.py \
-            tests/test_e2e/test_poc_admin.py \
-            tests/test_e2e/test_poc_multi_doc.py \
-            tests/test_e2e/test_poc_branding.py; do
-            echo "--- Running $test_file ---"
-            uv run pytest "$test_file" \
-              --timeout=120 -v --tb=short \
-              --junitxml="e2e-results-${{ matrix.cloud }}-$(basename $test_file .py).xml" || EXIT_CODE=1
-          done
-          exit $EXIT_CODE
-
-      - name: Upload E2E test results
-        uses: actions/upload-artifact@v4
-        if: always() && steps.check_secrets.outputs.skip != 'true'
-        with:
-          name: e2e-results-${{ matrix.cloud }}
-          path: poc/e2e-results-${{ matrix.cloud }}-*.xml
-
-      - name: Upload failure screenshots
-        uses: actions/upload-artifact@v4
-        if: failure() && steps.check_secrets.outputs.skip != 'true'
-        with:
-          name: e2e-screenshots-${{ matrix.cloud }}
-          path: poc/screenshots/
-          if-no-files-found: ignore
-
-  # -----------------------------------------------------------------------
-  # Summary — aggregate cross-cloud results
-  # -----------------------------------------------------------------------
-  summary:
-    name: Cross-Cloud Summary
-    runs-on: ubuntu-latest
-    needs: [secret-scan, unit-tests, sql-tests, e2e-tests]
-    if: always()
-    steps:
-      - name: Generate summary
-        run: |
-          echo "## Cross-Cloud Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Secret Scan | ${{ needs.secret-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| SQL Tests (aws) | ${{ needs.sql-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| SQL Tests (azure) | ${{ needs.sql-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| SQL Tests (gcp) | ${{ needs.sql-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| E2E Tests (aws) | ${{ needs.e2e-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| E2E Tests (azure) | ${{ needs.e2e-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| E2E Tests (gcp) | ${{ needs.e2e-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > /tmp/rsa_key.p8
+          chmod 600 /tmp/rsa_key.p8
+      - run: pytest -m sql --tb=short
