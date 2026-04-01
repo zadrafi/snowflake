@@ -12,7 +12,7 @@ Usage in any page:
     inject_custom_css()  # call once per page for consistent styling
 """
 DB = "AI_EXTRACT_POC.DOCUMENTS"
-STAGE = "AI_EXTRACT_POC.DOCUMENTS.STREAMLIT_STAGE"
+STAGE = "AI_EXTRACT_POC.DOCUMENTS.DOCUMENT_STAGE
 import json
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
