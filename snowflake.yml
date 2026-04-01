@@ -29,7 +29,7 @@ entities:
     stage: STREAMLIT_STAGE
     runtime:
       name: SYSTEM$ST_CONTAINER_RUNTIME_PY3_11
-      compute_pool: AI_EXTRACT_POC_POOL     # <-- change to your compute pool name
+      compute_pool: SYSTEM_COMPUTE_POOL_CPU   # <-- change to your compute pool name
       external_access_integrations:
         - PYPI_ACCESS_INTEGRATION
         - PYPI_ACCESS
