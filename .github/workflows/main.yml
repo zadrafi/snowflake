@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest snowflake-snowpark-python pypdfium2 Pillow reportlab
+      - run: pip install -e . pytest
       - run: pytest  # runs only unit tests (default marker)
 
   integration-tests:
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest snowflake-connector-python snowflake-snowpark-python
+      - run: pip install -e . pytest snowflake-connector-python
       - name: Configure Snowflake connection
         run: |
           mkdir -p ~/.snowflake
