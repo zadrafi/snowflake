@@ -1,10 +1,17 @@
-# .github/workflows/test.yml
 name: Test Suite
+
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   POC_CONNECTION: ci
@@ -16,36 +23,58 @@ env:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest snowflake-snowpark-python pypdfium2 Pillow reportlab
-      - run: pytest  # runs only unit tests (default marker)
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest snowflake-snowpark-python pypdfium2 Pillow reportlab
+      - name: Run unit tests
+        run: pytest -m "not sql and not e2e"
 
   integration-tests:
     runs-on: ubuntu-latest
-    needs: unit-tests  # only run if unit tests pass
+    timeout-minutes: 30
+    needs: unit-tests
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest snowflake-connector-python snowflake-snowpark-python
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest snowflake-connector-python snowflake-snowpark-python
+      - name: Write Snowflake private key
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          printf '%s' "${SNOWFLAKE_PRIVATE_KEY}" > /tmp/rsa_key.p8
+          chmod 600 /tmp/rsa_key.p8
       - name: Configure Snowflake connection
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
         run: |
           mkdir -p ~/.snowflake
           cat > ~/.snowflake/connections.toml << EOF
           [ci]
-          account = "${{ secrets.SNOWFLAKE_ACCOUNT }}"
-          user = "${{ secrets.SNOWFLAKE_USER }}"
+          account = "${SNOWFLAKE_ACCOUNT}"
+          user = "${SNOWFLAKE_USER}"
           private_key_path = "/tmp/rsa_key.p8"
-          role = "AI_EXTRACT_APP"
-          warehouse = "AI_EXTRACT_WH"
-          database = "AI_EXTRACT_POC"
-          schema = "DOCUMENTS"
+          role = "${POC_ROLE}"
+          warehouse = "${POC_WH}"
+          database = "${POC_DB}"
+          schema = "${POC_SCHEMA}"
           EOF
-          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > /tmp/rsa_key.p8
-          chmod 600 /tmp/rsa_key.p8
-      - run: pytest -m sql --tb=short
+          chmod 600 ~/.snowflake/connections.toml
+      - name: Run integration tests
+        run: pytest -m sql --tb=short
